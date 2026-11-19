@@ -1,0 +1,74 @@
+'use strict';
+
+class DiagnosticError extends Error {
+    constructor(code, nrc) {
+        super(code);
+        this.code = code;
+        this.nrc = nrc;
+    }
+}
+
+const malformed = () => new DiagnosticError('payload');
+
+function text(bytes, encoding) {
+    const value = Buffer.from(bytes).toString(encoding);
+    if (!Buffer.from(value, encoding).equals(Buffer.from(bytes)) ||
+        /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(value)) throw malformed();
+    return value;
+}
+
+function accountId(bytes) {
+    if (bytes.some((byte) => byte < 0x20 || byte > 0x7e)) throw malformed();
+    return text(bytes, 'ascii');
+}
+
+function decodeAccounts(payload) {
+    // PERSONALISATION_ACCOUNT_IDS, 0xC6A68–0xC6FDB. Strip the echoed
+    // DID first, then consume six NUL-terminated strings and the guest ID.
+    let offset = 0;
+    function next(last) {
+        let end = payload.indexOf(0, offset);
+        if (end < 0) {
+            if (!last) throw malformed();
+            end = payload.length;
+        }
+        const field = payload.slice(offset, end);
+        offset = Math.min(end + 1, payload.length);
+        return field;
+    }
+    const profiles = [];
+    for (let slot = 1; slot <= 3; slot++) {
+        const id = accountId(next(false));
+        const name = text(next(false), 'utf8');
+        if (id) profiles.push({ id, name, slot, type: null });
+        else if (name) throw malformed();
+    }
+    const guestId = accountId(next(true));
+    if (guestId) profiles.push({ id: guestId, name: 'Guest', slot: null, type: 'guest' });
+    if (offset !== payload.length || new Set(profiles.map((p) => p.id)).size !== profiles.length) throw malformed();
+    return profiles;
+}
+
+function decodeCreationResult(payload) {
+    // Both fields of RES_0xA19A_R apply to RRR. The ID is optional.
+    if (!payload.length || ![0, 1, 2, 3, 255].includes(payload[0])) throw malformed();
+    const end = payload.indexOf(0, 1);
+    if (end !== -1 && end !== payload.length - 1) throw malformed();
+    return { status: payload[0], id: accountId(payload.slice(1, end < 0 ? payload.length : end)) || null };
+}
+
+function decodeIdentity(payload) {
+    if (payload.length < 3) throw malformed();
+    const index = Buffer.from(payload.slice(0, 3)).toString('hex').toUpperCase();
+    return { index, isMgu: index === '0F25B0' };
+}
+
+function createdProfile(before, after, reportedId) {
+    const ids = new Set(before.map((p) => p.id));
+    if (before.some((p) => !after.some((q) => q.id === p.id && q.type === p.type))) return null;
+    const added = after.filter((p) => !ids.has(p.id));
+    if (added.length !== 1 || added[0].type === 'guest' || (reportedId && added[0].id !== reportedId)) return null;
+    return added[0];
+}
+
+module.exports = { DiagnosticError, decodeAccounts, decodeCreationResult, decodeIdentity, createdProfile };

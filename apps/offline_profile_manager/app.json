@@ -1,0 +1,301 @@
+{
+  "id": "offline_profile_manager",
+  "title": "Offline Profile Manager",
+  "description": "Read-only driver profile diagnostics for BMW iDrive 7 and HU_MGU.",
+  "version": "0.1.0",
+  "vendor": "Offline Profile Manager",
+  "loggingId": "OFPF",
+  "mguHmi": [
+    "ID7"
+  ],
+  "license": "MIT",
+  "signals": {
+    "com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu": {
+      "_instances": "SystemFunctionsInternalTasuInst1",
+      "_methods": [
+        "sendTasuRequest"
+      ],
+      "_broadcasts": [
+        "sendTasuResponse"
+      ]
+    },
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "_instances": "1",
+      "statusCarSpeed2": "rs"
+    },
+    "de.bmw.infrastructure.VehicleInformation": {
+      "_instances": "1",
+      "statusGearboxDrive": "s",
+      "_optional": "Writes require a gear selector signal"
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "menu",
+      "title": "Offline Profile Manager",
+      "items": [
+        [
+          "text",
+          "CONNECTION",
+          "Connecting to HU_MGU"
+        ],
+        [
+          "text3",
+          "STATUS",
+          "Reading profiles"
+        ],
+        [
+          "tworow",
+          "PROFILE_0"
+        ],
+        [
+          "tworow",
+          "PROFILE_1"
+        ],
+        [
+          "tworow",
+          "PROFILE_2"
+        ],
+        [
+          "tworow",
+          "PROFILE_3"
+        ],
+        [
+          "button",
+          "REFRESH",
+          "Refresh profiles"
+        ],
+        [
+          "button",
+          "CREATE",
+          "Create offline profile"
+        ],
+        [
+          "button",
+          "LOGIN",
+          "Activate"
+        ],
+        [
+          "button",
+          "RENAME",
+          "Rename"
+        ],
+        [
+          "button",
+          "OPEN_SETTINGS",
+          "Write settings"
+        ],
+        [
+          "button",
+          "DIAGNOSTICS",
+          "Diagnostics"
+        ]
+      ]
+    },
+    {
+      "name": "SETTINGS",
+      "kind": "menu",
+      "title": "Write settings",
+      "items": [
+        [
+          "text3",
+          "SETTINGS_WARNING",
+          "Writes can affect BMW ID and Digital Key. Keep your physical key with you. Enable writes only when parked."
+        ],
+        [
+          "text",
+          "WRITE_STATE",
+          "Checking firmware"
+        ]
+      ],
+      "settings": true
+    },
+    {
+      "name": "CREATE_WARNING",
+      "kind": "menu",
+      "title": "Create profile",
+      "items": [
+        [
+          "text3",
+          "CREATE_RISK",
+          "Creating a profile can affect BMW ID and Digital Key. Make sure you have your physical key."
+        ],
+        [
+          "button",
+          "CREATE_NEXT",
+          "I have my key. Continue"
+        ]
+      ]
+    },
+    {
+      "name": "CONFIRM",
+      "kind": "menu",
+      "title": "Confirmation",
+      "items": [
+        [
+          "text3",
+          "CONFIRM_TEXT",
+          "Confirm the operation"
+        ],
+        [
+          "button",
+          "APPLY",
+          "Confirm"
+        ]
+      ]
+    },
+    {
+      "name": "EDIT",
+      "kind": "menu",
+      "title": "Rename profile",
+      "items": [
+        [
+          "text",
+          "DRAFT",
+          "New name"
+        ],
+        [
+          "dropdown",
+          "CHARACTER",
+          "Choose character",
+          [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "I",
+            "J",
+            "K",
+            "L",
+            "M",
+            "N",
+            "O",
+            "P",
+            "Q",
+            "R",
+            "S",
+            "T",
+            "U",
+            "V",
+            "W",
+            "X",
+            "Y",
+            "Z",
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "f",
+            "g",
+            "h",
+            "i",
+            "j",
+            "k",
+            "l",
+            "m",
+            "n",
+            "o",
+            "p",
+            "q",
+            "r",
+            "s",
+            "t",
+            "u",
+            "v",
+            "w",
+            "x",
+            "y",
+            "z",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "-",
+            "_"
+          ]
+        ],
+        [
+          "button",
+          "ADD_CHARACTER",
+          "Add character"
+        ],
+        [
+          "button",
+          "ADD_SPACE",
+          "Add space"
+        ],
+        [
+          "button",
+          "ERASE_CHARACTER",
+          "Delete last character"
+        ],
+        [
+          "button",
+          "RENAME_NEXT",
+          "Continue"
+        ]
+      ]
+    },
+    {
+      "name": "DETAILS",
+      "kind": "menu",
+      "title": "HU_MGU diagnostics",
+      "items": [
+        [
+          "text",
+          "ID_INDEX",
+          "SGBD index"
+        ],
+        [
+          "text",
+          "ID_VERSION",
+          "Software version"
+        ],
+        [
+          "text",
+          "ID_VARIANT",
+          "Software variant"
+        ],
+        [
+          "text",
+          "PARK",
+          "Parking status"
+        ],
+        [
+          "text",
+          "ACTIVE",
+          "Active account"
+        ],
+        [
+          "text",
+          "NRC",
+          "ECU response"
+        ]
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "writes",
+      "label": "Allow writes until the app restarts",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "config": {
+    "fullScreenRequired": false,
+    "privateLogs": true
+  }
+}

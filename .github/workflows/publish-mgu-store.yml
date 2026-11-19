@@ -1,0 +1,79 @@
+name: Publish MGU Store app
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: 'App directory under apps/'
+        type: string
+        default: offline_profile_manager
+        required: true
+      replace_existing:
+        description: 'Replace the package and move the tag for an existing release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: mgu-store-release-${{ inputs.app_id }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Test and build selected app
+        id: build
+        env:
+          APP_ID: ${{ inputs.app_id }}
+        run: python3 tools/build_mgu_app.py "$APP_ID" --test --github-output "$GITHUB_OUTPUT"
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.build.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.build.outputs.title }}
+          PACKAGE: ${{ steps.build.outputs.package }}
+          METADATA: ${{ steps.build.outputs.metadata }}
+          ICON: ${{ steps.build.outputs.icon }}
+          NOTES: ${{ steps.build.outputs.notes }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing }}
+        run: |
+          if [[ "$REPLACE_EXISTING" != true ]]; then
+            gh release create "$RELEASE_TAG" "$PACKAGE" "$METADATA" "$ICON" \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --notes-file "$NOTES"
+            exit 0
+          fi
+
+          release_api="repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
+          tag_api="repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG"
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" == "$GITHUB_SHA" ]]
+          release="$(gh api "$release_api")"
+          jq -e '.immutable != true and .draft == false and .prerelease == false' <<< "$release" > /dev/null
+
+          asset_digest() {
+            jq -er --arg name "${1##*/}" '.assets[] | select(.name == $name) | .digest'
+          }
+          file_digest() {
+            printf 'sha256:%s\n' "$(sha256sum "$1" | cut -d ' ' -f 1)"
+          }
+          for unchanged in "$METADATA" "$ICON"; do
+            [[ "$(asset_digest "$unchanged" <<< "$release")" == "$(file_digest "$unchanged")" ]] ||
+              { printf 'Asset differs from the existing release: %s\n' "$unchanged" >&2; exit 1; }
+          done
+
+          backup_dir="$(mktemp -d "$RUNNER_TEMP/mgu-release-backup.XXXXXXXX")"
+          gh release download "$RELEASE_TAG" --pattern "${PACKAGE##*/}" --dir "$backup_dir" --repo "$GITHUB_REPOSITORY"
+          if ! gh release upload "$RELEASE_TAG" "$PACKAGE" --clobber --repo "$GITHUB_REPOSITORY"; then
+            gh release upload "$RELEASE_TAG" "$backup_dir/${PACKAGE##*/}" --clobber --repo "$GITHUB_REPOSITORY"
+            exit 1
+          fi
+          [[ "$(gh api "$release_api" | asset_digest "$PACKAGE")" == "$(file_digest "$PACKAGE")" ]]
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
+          gh api --method PATCH "$tag_api" -f sha="$GITHUB_SHA" -F force=true --silent
+          [[ "$(gh api "$tag_api" --jq .object.sha)" == "$GITHUB_SHA" ]]
