@@ -9,6 +9,7 @@ The source is the local `BDC_G05.prg`, revision `1.000`, SHA-256 `2ab470b9fe6ca6
 | `22 D3 21` | A 16-bit `0/1` flag. The function name refers to thermal protection. The field name in this revision contains `SPIELSCHUTZ`. The app labels it **Protection (D321)**. Its relationship to mirror glass temperature requires vehicle testing. |
 | `22 23 05` | An unsigned 16-bit big-endian count of NSC-triggered mirror heater activations. |
 | `22 E4 50` | `RES_0xE450_D` defines eight bytes. The fourth reports mirror heater coding according to `TAB_AUSSENSPIEGEL_HEIZUNG_VORHANDEN`. `00` means uncoded, `01` means coded, and `FF` means invalid. |
+| `19 02 0C` | The `FS_LESEN` job specifies status mask `0C` for pending and confirmed codes. A `59 02` reply contains a status availability mask followed by four-byte records with a three-byte code and one status byte. |
 
 ## 30-second activation
 
@@ -17,3 +18,16 @@ The source is the local `BDC_G05.prg`, revision `1.000`, SHA-256 `2ab470b9fe6ca6
 `STEUERN` starts the UDS payload with `2E` at `0x35887`, takes the DID from the `SG_FUNKTIONEN` row at `0x369B5–0x36ACB`, and reads `WERT` from the argument table at `0x3B8A3`. The `signed int` encoding branches at `0x38F79–0x391C9` and `0x3D4A8` select little-endian only for `L/l`. The default stores the high byte first, as shown at `0x39116–0x39188`. The `STATUS_LESEN` read branches use the same default at `0x18F87–0x19252` and `0x1BD24–0x1BFB9`. `STEUERN` wraps the payload in the transport frame before `XSEND` at `0x4E65B–0x4E7B2`.
 
 The app sends TASU service `2E` with data `D3 2D 00 04 00 1E`. It accepts `6E D3 2D` from ECU `40` as acknowledgement and reads `D32D` to observe the reported heater state. The request was reconstructed from PRG bytecode and tested with simulated responses. The target firmware behavior remains unverified. [InternalTasu diagnostics in the App Kit](https://github.com/cauliflowermossgrape/idrive7-apps#45-diagnostics)
+
+`D32D` describes one shared heater state and request. Testing for physical heat requires measuring each mirror surface separately. The app retains the pre-test snapshot, the first ON sample observed during the test (or the first valid status if ON was never observed), and the first status read after the test window.
+
+## Mirror fault memory
+
+The app filters the BDC fault memory reply to the following entries from `FORTTEXTE`.
+
+| Code | Meaning |
+| --- | --- |
+| `804246`, `804256` | Left or right mirror heater or electrochromic dimming fault. |
+| `D90D0A`, `D90D0D` | Left or right mirror LIN module missing. |
+| `804340` | Mirror heater short to ground. |
+| `804341` | Mirror heater open circuit or short to positive. |

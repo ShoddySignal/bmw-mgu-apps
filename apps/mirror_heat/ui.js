@@ -1,6 +1,8 @@
 'use strict';
 
+const { MIRROR_FAULTS } = require('./protocol');
 const unknown = 'Unavailable';
+const faultRows = Object.keys(MIRROR_FAULTS).map((code) => 'F_' + code);
 
 function value(sample) { return sample ? sample.value : null; }
 
@@ -13,34 +15,61 @@ function detail(sample) {
     return [sample.error, sample.raw].filter(Boolean).join(' · ') || '—';
 }
 
+function heatSummary(heat) {
+    if (!heat) return '—';
+    const on = state(heat.on, 'ON', 'OFF');
+    return heat.demand === null ? on : on + ' · ' + heat.demand + '% requested';
+}
+
+function testReply(test) {
+    if (!test) return 'No test started';
+    if (!test.attempted) return test.error ? 'Not sent · ' + test.error : 'Checking test conditions';
+    if (!test.error) return test.raw ? 'Accepted · ' + test.raw : 'Waiting for BDC';
+    return (test.error.startsWith('NRC ') ? 'Declined · ' : 'Unconfirmed · ') + detail(test);
+}
+
 function labels(monitor) {
     const sample = monitor.samples;
+    const test = monitor.test;
     const heat = value(sample.heating);
     const demand = heat ? heat.demand : null;
     const count = value(sample.counter);
+    const faults = value(sample.faults);
+    let faultStatus = 'Select Read status';
+    if (faults) faultStatus = faults.length ? faults.length + ' matching codes' : 'No matching pending or stored codes';
+    else if (sample.faults) faultStatus = 'Unavailable · ' + detail(sample.faults);
     const remaining = monitor.remaining();
-    return {
+    const text = {
         STATUS: remaining ? monitor.message + ' ' + remaining + ' s' : monitor.message,
-        HEATING: 'Heating status: ' + state(heat && heat.on, 'ON', 'OFF'),
-        DEMAND: 'Requested output: ' + (demand === null ? unknown : demand + '%'),
+        HEATING: 'BDC heater status: ' + state(heat && heat.on, 'ON', 'OFF'),
+        DEMAND: 'BDC requested output: ' + (demand === null ? unknown : demand + '%'),
         PROTECTION: 'Protection (D321): ' + state(value(sample.protection), 'Active', 'Inactive'),
         PARKING: 'Parking check: ' + (monitor.parked() ? 'P · 0 km/h' : 'waiting for current P and 0 km/h'),
+        R_TEST: 'Last test reply: ' + testReply(test),
+        BEFORE: 'Before test: ' + heatSummary(test && test.before),
+        DURING: 'During test: ' + heatSummary(test && test.during),
+        AFTER: 'After test: ' + heatSummary(test && test.after),
+        FAULT_STATUS: 'Mirror faults: ' + faultStatus,
         IDENT: 'BDC SGBD: ' + (value(sample.ident) || detail(sample.ident)),
         CODED: 'Mirror heating coded: ' + state(value(sample.equipment), 'Yes', 'No'),
         NSC: 'NSC activation count: ' + (count === null ? unknown : count),
         R_HEAT: 'D32D: ' + detail(sample.heating),
         R_PROTECT: 'D321: ' + detail(sample.protection),
         R_COUNT: '2305: ' + detail(sample.counter),
-        R_EQUIPMENT: 'E450: ' + detail(sample.equipment),
-        R_TEST: 'Test response: ' + detail(monitor.write)
+        R_EQUIPMENT: 'E450: ' + detail(sample.equipment)
     };
+    for (const { code, description, status } of faults || []) {
+        text['F_' + code] = code + ' · ' + description + ' · ' + status;
+    }
+    return text;
 }
 
 function bindUi(ctx, monitor) {
     const ui = ctx.ui;
     const sent = {};
     const view = ['STATUS', 'HEATING', 'DEMAND', 'PROTECTION', 'PARKING'];
-    const diagnostics = ['IDENT', 'CODED', 'NSC', 'R_HEAT', 'R_PROTECT', 'R_COUNT', 'R_EQUIPMENT', 'R_TEST'];
+    const diagnostics = ['R_TEST', 'BEFORE', 'DURING', 'AFTER', 'FAULT_STATUS', 'IDENT', 'CODED', 'NSC',
+        'R_HEAT', 'R_PROTECT', 'R_COUNT', 'R_EQUIPMENT'];
     let rendering = false;
     let dirty = false;
     function changed(key, value, update, pending) {
@@ -69,6 +98,11 @@ function bindUi(ctx, monitor) {
                 }
                 if (ui.isVisible('DETAILS')) {
                     for (const key of diagnostics) changed(key, text[key], () => ui.text(key, text[key]), pending);
+                    for (const key of faultRows) {
+                        const show = !!text[key];
+                        if (show) changed(key, text[key], () => ui.text(key, text[key]), pending);
+                        changed('show-' + key, show, () => ui.visible(key, show), pending);
+                    }
                 }
                 await Promise.all(pending);
             } while (dirty);

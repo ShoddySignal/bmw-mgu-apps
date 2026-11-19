@@ -3,27 +3,27 @@
 const { strict: assert } = require('node:assert');
 const { test } = require('node:test');
 const { EventEmitter } = require('node:events');
-const { Diag, replyTo } = require('../kit/runtime/diag');
+const diagKit = require('../kit/runtime/diag');
 const { MirrorDiag, DIDS, decodeRead } = require('../apps/mirror_heat/protocol');
 const { Monitor } = require('../apps/mirror_heat/monitor');
 const { Parking, isParked, stage } = require('../apps/mirror_heat/parking');
 const { labels, bindUi } = require('../apps/mirror_heat/ui');
-const { signals } = require('../apps/mirror_heat/app.json');
+const { signals, screens } = require('../apps/mirror_heat/app.json');
 
 const OFF = [0x62, 0xd3, 0x2d, 0, 0, 0, 0];
 const ON = [0x62, 0xd3, 0x2d, 0, 1, 0, 100];
 const WRITE = [0x2e, 0xd3, 0x2d, 0, 4, 0, 30];
+const FAULTS = [0x19, 0x02, 0x0c];
 
 function harness(options = {}) {
     let clock = 0;
     const calls = [];
     const log = { info() {}, warn() {} };
-    const link = new Diag({}, log);
+    const link = new diagKit.Diag({}, log);
     let heatedUntil = 0;
     link.available = true;
     let parked = true;
     let beforeNative;
-    let nsc = 19;
     let monitor;
     const data = {
         [DIDS.ident]: [0x62, 0xf1, 0x50, 0x0f, 0x26, 0x80],
@@ -44,23 +44,27 @@ function harness(options = {}) {
         let reply;
         if (frame.serviceID === 0x2e) {
             assert.deepEqual(bytes, WRITE);
+            if (options.hideBeforeWriteReply) monitor.setVisible(false);
             if (options.refuse) reply = [0x7f, 0x2e, 0x22];
             else {
                 heatedUntil = clock + 30000;
-                nsc = 20;
                 reply = options.loseAck ? [0x6e, 0xd3, 0x2d, 0xff] : [0x6e, 0xd3, 0x2d];
             }
+        } else if (frame.serviceID === 0x19) {
+            assert.deepEqual(bytes, FAULTS);
+            link._onResponse({ udsResponse: [0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0x59, 0x01, 0xff, 0, 0, 0] });
+            reply = options.faultReply || [0x59, 0x02, 0xff];
         } else {
             const did = bytes[1] * 256 + bytes[2];
-            if (did === DIDS.heating) reply = clock < heatedUntil ? ON : OFF;
-            else if (did === DIDS.counter) reply = [0x62, 0x23, 5, 0, nsc];
+            if (did === DIDS.heating) reply = options.alreadyOn || clock < heatedUntil ? ON : OFF;
+            else if (did === DIDS.counter) reply = [0x62, 0x23, 5, 0, 0];
             else reply = data[did];
         }
         link._onResponse({ udsResponse: [0, 0, 0, 0, 0, 0, 0x63, 0, 0, ...reply] });
         link._onResponse({ udsResponse: [0, 0, 0, 0, 0, 0, 0x40, 0, 0, ...reply] });
         return 'NO_ERROR';
     };
-    const diag = new MirrorDiag(link, replyTo);
+    const diag = new MirrorDiag(link, diagKit);
     monitor = new Monitor(diag, () => parked, () => clock, async (ms) => {
         clock += ms;
         if (options.hideWhileWaiting) monitor.setVisible(false);
@@ -135,15 +139,59 @@ test('reads a snapshot without writing and sends exactly one fixed write with a 
     await h.monitor.refresh();
     assert.match(labels(h.monitor).HEATING, /OFF/);
     assert.deepEqual(h.writes(), []);
+    assert.deepEqual(h.calls.at(-1), FAULTS);
     h.monitor.review();
     await Promise.all([h.monitor.confirm(), h.monitor.confirm()]);
     assert.deepEqual(h.writes(), [WRITE]);
-    assert.equal(h.monitor.write.raw, '6E D3 2D');
-    assert.equal(h.monitor.observed, true);
-    assert.match(h.monitor.message, /BDC reported heating/);
+    const text = labels(h.monitor);
+    assert.match(text.R_TEST, /Accepted · 6E D3 2D/);
+    assert.match(text.BEFORE, /OFF · 0%/);
+    assert.match(text.DURING, /ON · 100%/);
+    assert.match(text.AFTER, /OFF · 0%/);
     assert.deepEqual(h.monitor.samples.heating.value, { on: false, demand: 0 });
-    assert.equal(h.monitor.samples.counter.value, 20);
-    assert(h.calls.every((bytes) => bytes[0] === 0x22 || bytes[0] === 0x2e));
+    assert.equal(h.monitor.samples.counter.value, 0);
+    assert.deepEqual(h.calls.at(-1), FAULTS);
+});
+
+test('keeps the BDC baseline when heat is already on and after a new status read', async () => {
+    const h = harness({ alreadyOn: true });
+    await h.monitor.refresh();
+    assert.match(labels(h.monitor).HEATING, /ON/);
+    assert.match(labels(h.monitor).R_TEST, /No test started/);
+    h.monitor.review();
+    await h.monitor.confirm();
+    await h.monitor.refresh();
+    const text = labels(h.monitor);
+    assert.match(text.R_TEST, /Accepted · 6E D3 2D/);
+    assert.match(text.BEFORE, /ON · 100%/);
+    assert.match(text.DURING, /ON · 100%/);
+    assert.match(text.AFTER, /ON · 100%/);
+});
+
+test('reports only pending or stored mirror DTCs and distinguishes incomplete or refused fault queries', async () => {
+    const reply = [0x59, 0x02, 0xff,
+        0x80, 0x42, 0x46, 0x09, 0xd9, 0x0d, 0x0d, 0x04, 0x80, 0x43, 0x41, 0x08,
+        0x80, 0x42, 0x56, 0x20, 0x12, 0x34, 0x56, 0x09];
+    const h = harness({ faultReply: reply });
+    await h.monitor.refresh();
+    const text = labels(h.monitor);
+    assert.match(text.FAULT_STATUS, /3 matching codes/);
+    assert.match(text.F_804246, /Left heater.*ACTIVE/);
+    assert.match(text.F_D90D0D, /Right mirror missing on LIN.*PENDING/);
+    assert.match(text.F_804341, /open circuit or short to positive.*STORED/);
+    assert.equal(text.F_804256, undefined);
+    assert.equal(text.F_123456, undefined);
+    assert.deepEqual(h.writes(), []);
+
+    for (const [faultReply, error] of [
+        [[0x59, 0x02, 0xff, 0x80], 'Unexpected fault memory reply'],
+        [[0x59, 0x02, 0x01], 'Fault status mask unavailable'],
+        [[0x7f, 0x19, 0x11], 'NRC 11']
+    ]) {
+        const failed = harness({ faultReply });
+        await failed.monitor.refresh();
+        assert.equal(labels(failed.monitor).FAULT_STATUS, 'Mirror faults: Unavailable · ' + error);
+    }
 });
 
 test('rejects writes for a different ECU schema, protection, or missing confirmation', async () => {
@@ -165,6 +213,7 @@ test('rejects writes for a different ECU schema, protection, or missing confirma
     h.monitor.review();
     await h.monitor.confirm();
     assert.match(h.monitor.message, /Protection is active/);
+    assert.match(labels(h.monitor).R_TEST, /Not sent.*Protection is active/);
     assert.deepEqual(h.writes(), []);
 });
 
@@ -175,7 +224,7 @@ test('checks Park, visibility and confirmation again at the native send boundary
         h.monitor.review();
         await h.monitor.confirm();
         assert.deepEqual(h.writes(), []);
-        assert.equal(h.monitor.write.attempted, false);
+        assert.match(labels(h.monitor).R_TEST, /Not sent/);
     }
 });
 
@@ -185,10 +234,12 @@ test('observes an ambiguous acknowledgement, shows refusal, and stays single-sho
     await uncertain.monitor.confirm();
     assert.deepEqual(uncertain.writes(), [WRITE]);
     assert.match(uncertain.monitor.message, /acknowledgement was unavailable/);
+    assert.match(labels(uncertain.monitor).R_TEST, /Unconfirmed/);
     const refused = harness({ refuse: true });
     refused.monitor.review();
     await refused.monitor.confirm();
     assert.match(refused.monitor.message, /NRC 22/);
+    assert.match(labels(refused.monitor).R_TEST, /Declined · NRC 22 · 7F 2E 22/);
     assert.equal(refused.monitor.remaining(), 0);
     const closed = harness({ hideWhileWaiting: true });
     closed.monitor.review();
@@ -202,9 +253,21 @@ test('observes an ambiguous acknowledgement, shows refusal, and stays single-sho
     assert.deepEqual(closed.writes(), [WRITE]);
 });
 
+test('keeps the reply when Diagnostics is opened before the write acknowledgement arrives', async () => {
+    const h = harness({ hideBeforeWriteReply: true });
+    h.monitor.review();
+    await h.monitor.confirm();
+    assert.deepEqual(h.writes(), [WRITE]);
+    assert.deepEqual(h.calls.at(-1), WRITE);
+    assert.match(h.monitor.message, /Observation stopped/);
+    assert.match(labels(h.monitor).R_TEST, /Accepted · 6E D3 2D/);
+    assert.equal(labels(h.monitor).DURING, 'During test: —');
+});
+
 test('transport rejects alternate writes, chassis services and changed test duration', async () => {
     const h = harness();
-    for (const [sid, data] of [[0x2e, [0xd3, 0x2d, 0, 4, 0, 31]], [0x2e, [0xd3, 0x2d, 0, 0, 0, 0]], [0x10, [3]], [0x22, [0xf1, 0x90]]]) {
+    for (const [sid, data] of [[0x2e, [0xd3, 0x2d, 0, 4, 0, 31]], [0x2e, [0xd3, 0x2d, 0, 0, 0, 0]],
+        [0x10, [3]], [0x22, [0xf1, 0x90]], [0x19, [0x02, 0xff]], [0x14, [0xff, 0xff, 0xff]]]) {
         await assert.rejects(h.diag.request(sid, data, () => {}), /Request blocked/);
     }
     await assert.rejects(h.diag.activate(), /Request blocked/);
@@ -212,6 +275,7 @@ test('transport rejects alternate writes, chassis services and changed test dura
 });
 
 test('RHMI buttons use review and confirmation and cancel an armed test on focus loss', async () => {
+    assert.equal(screens.find(({ name }) => name === 'DETAILS').items[0][1], 'R_TEST');
     const h = harness();
     const click = {}, text = {}, visible = {};
     let focused = true;

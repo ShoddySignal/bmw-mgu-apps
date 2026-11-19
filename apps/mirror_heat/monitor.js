@@ -22,8 +22,7 @@ class Monitor {
         this.lockUntil = 0;
         this.samples = {};
         this.message = 'Select Read status or Review heater test.';
-        this.write = null;
-        this.observed = false;
+        this.test = null;
     }
 
     setVisible(visible) {
@@ -38,8 +37,8 @@ class Monitor {
             this.confirmUntil = null;
         }
         if (this.busy) {
-            this.message = this.testInProgress && this.write && this.write.attempted ?
-                'Observation stopped. The BDC uses the selected test duration.' : 'Reading stopped.';
+            if (!this.testInProgress) this.message = 'Reading stopped.';
+            else this.message = this.test.attempted ? 'Observation stopped.' : 'Test cancelled before send.';
         }
     }
 
@@ -88,8 +87,11 @@ class Monitor {
     async run(active, deadline) {
         if (!this.visible || this.busy) return;
         if (active && (!Number.isFinite(deadline) || this.now() >= deadline)) return;
+        const test = active ? { attempted: false, raw: '', error: null, before: null, during: null, after: null } : null;
+        if (test) this.test = test;
         if (!this.diag.available || (active && (!this.parked() || this.now() < this.lockUntil))) {
             this.message = !this.diag.available ? 'Waiting for TASU.' : 'Test unavailable. Check P and test timer.';
+            if (test) test.error = this.message;
             return;
         }
         const generation = this.generation;
@@ -101,7 +103,8 @@ class Monitor {
             guard();
             let sample;
             try {
-                sample = await this.diag.read(DIDS[key], guard);
+                sample = key === 'faults' ? { value: await this.diag.readFaults(guard) } :
+                    await this.diag.read(DIDS[key], guard);
             } catch (error) {
                 sample = { value: null, error: error.code || 'Read failed', raw: error.raw || '' };
             }
@@ -113,10 +116,6 @@ class Monitor {
         this.busy = true;
         this.testInProgress = active;
         this.samples = {};
-        if (active) {
-            this.write = null;
-            this.observed = false;
-        }
         this.message = 'Identifying the BDC...';
         try {
             if (await read('ident') !== INDEX) {
@@ -126,10 +125,12 @@ class Monitor {
             this.message = 'Reading mirror heater status...';
             for (const key of ORDER) await read(key);
             if (!active) {
+                await read('faults');
                 this.message = 'Snapshot from BDC_G05. Open Diagnostics for each reply.';
                 return;
             }
             const heating = this.samples.heating.value;
+            test.before = heating;
             if (!heating || heating.on === null || heating.demand === null) {
                 this.message = 'Heater status is unavailable or has an unexpected layout.';
                 return;
@@ -144,55 +145,54 @@ class Monitor {
             }
 
             this.message = 'Sending the 30-second test...';
-            this.write = { attempted: false, raw: '', error: null };
             try {
-                const raw = await this.diag.activate(() => {
+                test.raw = await this.diag.activate(() => {
                     guard();
                     if (this.now() >= deadline) throw new MirrorError('Confirmation expired before send.');
                     if (!this.parked()) throw new MirrorError('Parking status changed. Test cancelled.');
-                    if (this.write.attempted) throw new MirrorError('Test already sent');
-                    this.write.attempted = true;
+                    if (test.attempted) throw new MirrorError('Test already sent');
+                    test.attempted = true;
                     this.activeUntil = this.now() + TEST_SECONDS * 1000;
                     this.lockUntil = this.activeUntil + REQUEST_MARGIN_MS;
                 });
-                guard();
-                this.write.raw = raw;
             } catch (error) {
-                if (!current()) return;
-                this.write.error = error.code || 'Test acknowledgement unavailable';
-                this.write.raw = error.raw || '';
-                if (!this.write.attempted) {
-                    this.message = this.write.error;
+                test.error = error.code || 'Test acknowledgement unavailable';
+                test.raw = error.raw || '';
+                if (!test.attempted) {
+                    if (current()) this.message = test.error;
                     return;
                 }
-                if (/^NRC [0-9A-F]{2}$/.test(this.write.error)) {
+                if (/^NRC [0-9A-F]{2}$/.test(test.error)) {
                     this.activeUntil = 0;
-                    this.message = 'BDC declined the test (' + this.write.error + ').';
+                    if (current()) this.message = 'BDC declined the test (' + test.error + ').';
                     return;
                 }
             }
-            const acknowledged = !!this.write.raw && !this.write.error;
+            guard();
+            const acknowledged = !!test.raw && !test.error;
             while (this.now() < this.lockUntil) {
-                this.message = acknowledged ? 'Test accepted. Compare both mirror surfaces.' :
+                this.message = acknowledged ? 'BDC accepted the request. Check both mirror surfaces.' :
                     'Test reply unconfirmed. Observing BDC until the test window ends.';
                 const value = await read('heating');
-                if (value && value.on && this.now() < this.activeUntil) this.observed = true;
+                if (value && value.on !== null && this.now() < this.activeUntil &&
+                    (!test.during || (!test.during.on && value.on))) test.during = value;
                 await read('protection');
                 const delay = Math.min(2000, this.lockUntil - this.now());
                 if (delay > 0) await this.wait(delay);
                 guard();
             }
 
-            await read('heating');
+            test.after = await read('heating');
             await read('protection');
             await read('counter');
+            await read('faults');
             this.message = acknowledged ?
-                (this.observed ? 'Test elapsed. BDC reported heating during the test.' :
-                    'Test elapsed. Heating ON was not observed in BDC status.') :
-                'Test elapsed. BDC acknowledgement was unavailable.';
+                'Test elapsed. Open Diagnostics for BDC status and mirror faults.' :
+                'Test elapsed. BDC acknowledgement was unavailable. Open Diagnostics.';
         } catch (error) {
             if (generation === this.generation) this.message = error.code || 'Diagnostic check interrupted.';
         } finally {
+            if (test && !test.attempted && !test.error) test.error = this.message;
             this.busy = false;
             this.testInProgress = false;
         }

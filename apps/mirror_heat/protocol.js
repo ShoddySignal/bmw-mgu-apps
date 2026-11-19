@@ -5,6 +5,15 @@ const INDEX = '0F2680';
 const DIDS = Object.freeze({ ident: 0xf150, heating: 0xd32d, protection: 0xd321, counter: 0x2305, equipment: 0xe450 });
 const TEST_SECONDS = 30;
 const ACTIVATE = Object.freeze([0xd3, 0x2d, 0x00, 0x04, 0x00, TEST_SECONDS]);
+const FAULT_QUERY = Object.freeze([0x02, 0x0c]);
+const MIRROR_FAULTS = Object.freeze({
+    '804246': 'Left heater or electrochromic dimming',
+    '804256': 'Right heater or electrochromic dimming',
+    'D90D0A': 'Left mirror missing on LIN',
+    'D90D0D': 'Right mirror missing on LIN',
+    '804340': 'Heater short to ground',
+    '804341': 'Heater open circuit or short to positive'
+});
 
 const lengths = {
     [DIDS.ident]: 3,
@@ -55,9 +64,11 @@ function decodeRead(did, uds) {
 }
 
 class MirrorDiag {
-    constructor(link, replyTo) {
+    constructor(link, { replyTo, parseDtcReply, statusInfo }) {
         this.link = link;
         this.replyTo = replyTo;
+        this.parseDtcReply = parseDtcReply;
+        this.statusInfo = statusInfo;
     }
 
     get available() { return this.link.available; }
@@ -70,8 +81,14 @@ class MirrorDiag {
             Object.values(DIDS).includes((data[0] << 8) | data[1]);
         const allowedTest = sid === 0x2e && data.length === ACTIVATE.length &&
             ACTIVATE.every((byte, index) => data[index] === byte);
-        if ((!allowedRead && !allowedTest) || typeof guard !== 'function') throw new MirrorError('Request blocked');
-        const accept = this.replyTo(sid, data);
+        const allowedFaults = sid === 0x19 && data.length === FAULT_QUERY.length &&
+            FAULT_QUERY.every((byte, index) => data[index] === byte);
+        if ((!allowedRead && !allowedTest && !allowedFaults) || typeof guard !== 'function') {
+            throw new MirrorError('Request blocked');
+        }
+        const matchReply = this.replyTo(sid, data);
+        const accept = allowedFaults ?
+            (uds) => matchReply(uds) && (uds[0] === 0x7f || uds[1] === FAULT_QUERY[0]) : matchReply;
         try {
             return await this.link.physical(ADDRESS, sid, data, 1300, accept, {
                 maxRetries: 0,
@@ -100,6 +117,24 @@ class MirrorDiag {
         payload(uds, 0x2e, DIDS.heating, 0);
         return hex(uds);
     }
+
+    async readFaults(guard) {
+        const uds = await this.request(0x19, FAULT_QUERY, guard);
+        if (!uds || !uds.length) throw new MirrorError('No reply');
+        const { ok, nrc, dtcs } = this.parseDtcReply(uds, FAULT_QUERY);
+        if (!ok && uds.length === 3 && uds[0] === 0x7f) {
+            throw new MirrorError('NRC ' + hex([nrc]));
+        }
+        if (!ok || uds.length < 3 || (uds.length - 3) % 4 !== 0) {
+            throw new MirrorError('Unexpected fault memory reply');
+        }
+        const mask = uds[2] & FAULT_QUERY[1];
+        if (!mask) throw new MirrorError('Fault status mask unavailable');
+        return dtcs.filter(({ code, status }) => MIRROR_FAULTS[code] && (status & mask))
+            .map(({ code, status }) => ({
+                code, description: MIRROR_FAULTS[code], status: this.statusInfo(status).label
+            }));
+    }
 }
 
-module.exports = { INDEX, DIDS, TEST_SECONDS, MirrorDiag, MirrorError, decodeRead };
+module.exports = { INDEX, DIDS, MIRROR_FAULTS, TEST_SECONDS, MirrorDiag, MirrorError, decodeRead };

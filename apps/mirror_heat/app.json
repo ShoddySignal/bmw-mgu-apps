@@ -2,7 +2,7 @@
   "id": "mirror_heat",
   "title": "Mirror Heat Check",
   "description": "Check BMW X5 G05 mirror heater status and run a timed 30-second BDC heater test.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "vendor": "ShoddySignal",
   "loggingId": "MHCK",
   "mguHmi": ["ID7"],
@@ -29,14 +29,14 @@
       "kind": "menu",
       "items": [
         ["text3", "STATUS", "Select Read status or Review heater test."],
-        ["text", "HEATING", "Heating status: —"],
-        ["text", "DEMAND", "Requested output: —"],
-        ["text", "PROTECTION", "Protection (D321): —"],
-        ["text", "PARKING", "Parking check: waiting for signals"],
         ["button", "READ", "Read status"],
         ["button", "REVIEW", "Review heater test"],
         ["button", "CONFIRM", "Start 30 s at 100%"],
-        ["button", "DETAILS_OPEN", "Diagnostics"]
+        ["button", "DETAILS_OPEN", "Diagnostics"],
+        ["text", "PARKING", "Parking check: waiting for signals"],
+        ["text", "HEATING", "BDC heater status: —"],
+        ["text", "DEMAND", "BDC requested output: —"],
+        ["text", "PROTECTION", "Protection (D321): —"]
       ]
     },
     {
@@ -44,6 +44,17 @@
       "kind": "menu",
       "title": "Mirror heater diagnostics",
       "items": [
+        ["text", "R_TEST", "Last test reply: No test started"],
+        ["text", "BEFORE", "Before test: —"],
+        ["text", "DURING", "During test: —"],
+        ["text", "AFTER", "After test: —"],
+        ["text", "FAULT_STATUS", "Mirror faults: select Read status"],
+        ["text", "F_804246", ""],
+        ["text", "F_804256", ""],
+        ["text", "F_D90D0A", ""],
+        ["text", "F_D90D0D", ""],
+        ["text", "F_804340", ""],
+        ["text", "F_804341", ""],
         ["text", "IDENT", "BDC SGBD: —"],
         ["text", "CODED", "Mirror heating coded: —"],
         ["text", "NSC", "NSC activation count: —"],
@@ -51,8 +62,7 @@
         ["text", "R_PROTECT", "D321: —"],
         ["text", "R_COUNT", "2305: —"],
         ["text", "R_EQUIPMENT", "E450: —"],
-        ["text", "R_TEST", "Test response: —"],
-        ["text3", "NOTE", "Compare both mirror surfaces. BDC data describes a shared command."]
+        ["text3", "NOTE", "BDC reports a shared heater request. Measure each mirror surface to verify heating."]
       ]
     }
   ],
