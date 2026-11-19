@@ -1,8 +1,8 @@
 {
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
-  "description": "Driver profile diagnostics and management for BMW iDrive 7 and HU_MGU.",
-  "version": "0.1.1",
+  "description": "Driver profile management for BMW iDrive 7. Diagnostics tested on BMW X5 G05 with L18_22w18.3-1-6 (mgu-high).",
+  "version": "0.1.2",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
   "mguHmi": [
@@ -25,8 +25,8 @@
     },
     "de.bmw.infrastructure.VehicleInformation": {
       "_instances": "1",
-      "statusGearboxDrive": "rs",
-      "DataPowerTrain2": "rs",
+      "statusGearboxDrive": "s",
+      "DataPowerTrain2": "s",
       "_optional": "Writes require a gear selector signal"
     }
   },
@@ -102,7 +102,7 @@
         [
           "text",
           "WRITE_STATE",
-          "Checking firmware"
+          "Checking HU_MGU"
         ]
       ],
       "settings": true

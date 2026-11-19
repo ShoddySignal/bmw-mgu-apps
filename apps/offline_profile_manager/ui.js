@@ -3,7 +3,6 @@
 const { ProfileDiag, validName, NAME_MAX } = require('./diag');
 const { Workflow } = require('./workflow');
 const { Vehicle, monotonicMs } = require('./vehicle');
-const verified = require('./verified-firmware');
 
 const PROFILE_ROWS = ['PROFILE_0', 'PROFILE_1', 'PROFILE_2', 'PROFILE_3'];
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -15,7 +14,6 @@ const ERRORS = {
     variant: 'SGBD index is unrecognized for HU_MGU.',
     payload: 'ECU reply has an unexpected format.',
     parked: 'Fresh readings of 0 km/h and gear P are required.',
-    firmware: 'This operation is awaiting validation on this firmware.',
     writeDisabled: 'Writes are off or the confirmation screen lost focus.',
     capacity: 'All three slots are in use.',
     createFailed: 'ECU reported that profile creation failed.',
@@ -71,8 +69,7 @@ function status(workflow) {
     case 'settingPia': return 'Profile created. Applying permanent PIA settings...';
     case 'confirmed': {
         if (workflow.detail.action !== 'create') return CONFIRMED[workflow.detail.action];
-        const where = workflow.approved('login') ? 'in the app or in iDrive' : 'in CAR → Driver Profiles';
-        return 'Created “' + profileLabel(workflow.detail.name) + '”. Select it ' + where + '.';
+        return 'Created “' + profileLabel(workflow.detail.name) + '”. Select it in the app or in iDrive.';
     }
     case 'ready': return workflow.pendingPiaId ? 'Profile created. Choose Finish profile setup.' : 'Profiles refreshed.';
     case 'error': {
@@ -103,8 +100,6 @@ async function start(ctx, kit, sdk) {
     const work = new Workflow(diag, vehicle, {
         writeEnabled: () => settings.get('writes') === true,
         visible: () => inFront('CONFIRM') && intent && intent.phase === 'running' && !intent.revoked,
-        firmware: () => software,
-        verified,
         changed: schedule,
         wait,
         now: monotonicMs,
@@ -117,8 +112,8 @@ async function start(ctx, kit, sdk) {
     }
 
     function can(action, id) {
-        if ((refreshPending && inFront('MAIN')) || work.busy || !link.available || !work.profiles || settings.get('writes') !== true ||
-            !work.approved(action === 'resumePia' ? 'pia' : action)) return false;
+        if ((refreshPending && inFront('MAIN')) || work.busy || !link.available || !work.profiles ||
+            settings.get('writes') !== true) return false;
         if (action === 'create') return !work.pendingPiaId && work.profiles.filter((p) => p.type !== 'guest').length < 3;
         const profile = driverProfile(id);
         if (!profile) return false;
@@ -148,7 +143,6 @@ async function start(ctx, kit, sdk) {
         const parkingIssue = vehicle.parkingIssue();
         const activeIssue = work.profiles ? vehicle.activeIssue || 'Active ID absent from profile list' : 'Profile list unavailable';
         const pending = work.pendingPiaId;
-        const firmwareReady = ['create', 'login', 'pia', 'rename'].some((action) => work.approved(action));
         const rows = PROFILE_ROWS.map((name, i) => {
             const profile = profiles[i];
             if (!profile) return ui.visible(name, false);
@@ -173,9 +167,9 @@ async function start(ctx, kit, sdk) {
                 ui.text('CREATE', pending ? 'Finish profile setup' : 'Create offline profile'),
                 ui.enabled('CREATE', pending ? !!can('resumePia', pending) : !!can('create')),
                 ui.enabled('RENAME', !!can('rename', activeId)),
-                ui.text('WRITE_STATE', firmwareReady ?
+                ui.text('WRITE_STATE', work.profiles ?
                     (settings.get('writes') ? 'Test writes are allowed while parked' : 'Writes are off') :
-                    'Writes are blocked on this firmware'),
+                    'A readable HU_MGU profile list is required'),
                 ui.text('ID_INDEX', 'SGBD index · ' + (work.identity ? work.identity.index : 'Unavailable')),
                 ui.text('ID_VERSION', 'Software version · ' + (software ? software.version : 'Unavailable')),
                 ui.text('ID_VARIANT', 'Software variant · ' + (software ? software.variantId : 'Unavailable')),

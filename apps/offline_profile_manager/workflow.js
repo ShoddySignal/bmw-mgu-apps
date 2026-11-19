@@ -4,14 +4,12 @@ const { DiagnosticError, createdProfile } = require('./profiles');
 const { loginRequest, validName } = require('./diag');
 
 class Workflow {
-    constructor(diag, vehicle, { writeEnabled, visible, firmware, verified, changed, wait, now,
+    constructor(diag, vehicle, { writeEnabled, visible, changed, wait, now,
         pendingPiaId, savePendingPia = () => {} }) {
         this.diag = diag;
         this.vehicle = vehicle;
         this.writeEnabled = writeEnabled;
         this.visible = visible;
-        this.firmware = firmware;
-        this.verified = verified;
         this.changed = changed;
         this.wait = wait;
         this.now = now;
@@ -87,9 +85,8 @@ class Workflow {
             current();
             this.identity = identity;
             if (!identity.isMgu) throw new DiagnosticError('variant');
-            const profiles = await this.readProfiles(current, { forDisplay: true });
-            if (this.accountLayoutPermitsWrites() && this.pendingPiaId &&
-                !profiles.some((p) => p.id === this.pendingPiaId && p.type !== 'guest')) {
+            const profiles = await this.readProfiles(current);
+            if (this.pendingPiaId && !profiles.some((p) => p.id === this.pendingPiaId && p.type !== 'guest')) {
                 this.setPendingPia(null);
                 throw new DiagnosticError('profileMissing');
             }
@@ -97,11 +94,8 @@ class Workflow {
         });
     }
 
-    async readProfiles(current, { forDisplay = false } = {}) {
-        const firmware = this.firmwareEntry();
-        const { profiles, extraBytes } = await this.diag.accounts({
-            allowExtraData: forDisplay || !!(firmware && firmware.allowExtraAccountData)
-        });
+    async readProfiles(current) {
+        const { profiles, extraBytes } = await this.diag.accounts();
         const active = await this.vehicle.activeAccount();
         current();
         this.profiles = profiles;
@@ -110,27 +104,10 @@ class Workflow {
         return profiles;
     }
 
-    firmwareEntry() {
-        if (!this.identity || !this.identity.isMgu) return null;
-        const software = this.firmware();
-        return software && this.verified.find((item) => item.index === this.identity.index &&
-            item.version === software.version && item.variantId === software.variantId);
-    }
-
-    accountLayoutPermitsWrites(firmware = this.firmwareEntry()) {
-        return !this.extraAccountBytes || !!(firmware && firmware.allowExtraAccountData);
-    }
-
-    approved(action) {
-        const firmware = this.firmwareEntry();
-        return !!firmware && this.accountLayoutPermitsWrites(firmware) && firmware.actions.includes(action) &&
-            (action !== 'create' || firmware.actions.includes('pia'));
-    }
-
-    permit(action, current, active) {
+    permit(current, active) {
         current();
         if (!this.writeEnabled() || !this.visible()) throw new DiagnosticError('writeDisabled');
-        if (!this.approved(action)) throw new DiagnosticError('firmware');
+        if (!this.identity || !this.identity.isMgu) throw new DiagnosticError('variant');
         const parkingIssue = this.vehicle.parkingIssue();
         if (parkingIssue) throw Object.assign(new DiagnosticError('parked'), { reason: parkingIssue });
         if (active && !this.vehicle.stillActive(active)) throw new DiagnosticError('active');
@@ -138,14 +115,14 @@ class Workflow {
 
     async create() {
         return this.run('create', async (current) => {
-            this.permit('create', current);
+            this.permit(current);
             if (this.pendingPiaId) throw new DiagnosticError('piaPending');
             const before = await this.readProfiles(current);
             if (before.filter((p) => p.type !== 'guest').length >= 3) throw new DiagnosticError('capacity');
 
             this.profiles = null;
             this.active = null;
-            await this.diag.create(() => this.permit('create', current));
+            await this.diag.create(() => this.permit(current));
             current();
             this.stage('accepted');
             const deadline = this.now() + 18000;
@@ -191,7 +168,7 @@ class Workflow {
         this.stage('settingPia');
         this.active = null;
         // The E333 list is one-based while the documented PIA slots are zero-based.
-        await this.diag.setPermanentPia(account.slot - 1, () => this.permit('pia', current));
+        await this.diag.setPermanentPia(account.slot - 1, () => this.permit(current));
         current();
         this.setPendingPia(null);
         this.stage('confirmed', { action: 'create', id: account.id, name: account.name });
@@ -202,7 +179,7 @@ class Workflow {
             loginRequest(account.id);
             this.profiles = null;
             this.active = null;
-            await this.diag.login(account.id, () => this.permit('login', current));
+            await this.diag.login(account.id, () => this.permit(current));
             current();
             this.stage('accepted');
             for (let attempt = 0; attempt < 4; attempt++) {
@@ -229,7 +206,7 @@ class Workflow {
             if (!active || active.id !== account.id) throw new DiagnosticError('active');
             this.profiles = null;
             this.active = null;
-            await this.diag.rename(name, () => this.permit('rename', current, active));
+            await this.diag.rename(name, () => this.permit(current, active));
             current();
             this.stage('accepted');
             const after = await this.readProfiles(current);
@@ -241,7 +218,7 @@ class Workflow {
 
     profileAction(action, id, perform) {
         return this.run(action, async (current) => {
-            this.permit(action, current);
+            this.permit(current);
             const profiles = await this.readProfiles(current);
             const account = profiles.find((p) => p.id === id && p.type !== 'guest');
             if (!account) throw new DiagnosticError('profileMissing');

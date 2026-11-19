@@ -104,7 +104,7 @@ class ProfileDiag {
     }
 
     identify() { return this.request(IDENT, null, decodeIdentity); }
-    accounts(options) { return this.request(ACCOUNTS, null, (payload) => decodeAccounts(payload, options)); }
+    accounts() { return this.request(ACCOUNTS, null, decodeAccounts); }
     creationResult() { return this.request(CREATION_RESULT, null, decodeCreationResult); }
     create(permit) { return this.write(CREATE, permit); }
     login(id, permit) { return this.write(loginRequest(id), permit); }

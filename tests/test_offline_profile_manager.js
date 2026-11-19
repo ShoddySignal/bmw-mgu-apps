@@ -9,8 +9,12 @@ const { Workflow } = require('../apps/offline_profile_manager/workflow');
 const { Vehicle, parkingIssue } = require('../apps/offline_profile_manager/vehicle');
 const { start } = require('../apps/offline_profile_manager/ui');
 const spec = require('../apps/offline_profile_manager/app.json');
-const approvedBuilds = require('../apps/offline_profile_manager/verified-firmware');
-const software = { version: 'L18_22w18.3-1-6', variantId: 'mgu-high' };
+
+test('Selector signals only request subscriptions in the installation manifest', () => {
+    const selector = spec.signals['de.bmw.infrastructure.VehicleInformation'];
+    assert.equal(selector.statusGearboxDrive, 's');
+    assert.equal(selector.DataPowerTrain2, 's');
+});
 
 const ident = [0x22, 0xf1, 0x50];
 const list = [0x22, 0xe3, 0x33];
@@ -83,23 +87,17 @@ async function harness(exchange, overrides = {}) {
         stillActive: (x) => x.id === state.active
     };
     let time = 0;
-    const version = { version: 'test-firmware', variantId: 'test-variant' };
     const stages = [];
     const workflow = new Workflow(diag, vehicle, {
         writeEnabled: () => state.enabled,
         visible: () => state.visible,
-        firmware: () => version,
-        verified: [{
-            index: '0F25B0', version: version.version, variantId: version.variantId,
-            actions: overrides.actions || ['create', 'pia', 'login', 'rename']
-        }],
         changed: () => stages.push(workflow.state),
         wait: async (ms) => { time += ms; },
         now: () => time,
         ...overrides.options
     });
     transport.on('available', (up) => { if (!up) workflow.disconnected(); });
-    return { signal, diag, workflow, state, stages, messages, version };
+    return { signal, diag, workflow, state, stages, messages };
 }
 
 test('PRG account format: fixed field order, UTF-8 names, empty slots and guest', () => {
@@ -111,31 +109,18 @@ test('PRG account format: fixed field order, UTF-8 names, empty slots and guest'
     assert.deepEqual(decodeAccounts([0, 0, 0, 0, 0, 0]), { profiles: [], extraBytes: 0 });
     assert.throws(() => decodeAccounts(empty.slice(0, 5)), { code: 'payload' });
     assert.deepEqual(decodeAccounts(empty.concat(0, 0, 0)), decodeAccounts(empty));
-    assert.throws(() => decodeAccounts(empty.concat(0, 65)), { code: 'payload', reason: 'Extra data after guest ID' });
+    assert.deepEqual(decodeAccounts(empty.concat(0, 65)), { profiles: decodeAccounts(empty).profiles, extraBytes: 2 });
     assert.throws(() => decodeAccounts([65, 0, 0xc0, 0, 0, 0, 0, 0, 0]), { code: 'payload' });
     assert.throws(() => decodeAccounts(Array.from(Buffer.from('A\0x\0A\0y\0\0\0\0'))), { code: 'payload' });
 });
 
-test('Unknown E333 trailing data is accepted for display and rejected before writes', async () => {
-    const extended = full.concat(0xa5, 0x5a);
-    const h = await harness(() => listReply(extended));
-    assert.equal(await h.workflow.refresh(), true);
-    assert.deepEqual(h.workflow.profiles, decodeAccounts(full).profiles);
-    assert.equal(h.workflow.extraAccountBytes, 2);
-    assert.equal(h.workflow.approved('create'), false);
-    assert.equal(h.workflow.approved('login'), false);
-    assert.equal(h.workflow.approved('pia'), false);
-    assert.equal(await h.workflow.rename(user, 'Other Name'), false);
-    assert.equal(h.workflow.detail.code, 'firmware');
-    assert.deepEqual(h.signal.requests, [ident, list]);
-
+test('A malformed fresh profile list blocks writes even after a valid refresh', async () => {
     let reads = 0;
-    const changed = await harness(() => listReply(++reads === 1 ? full : extended));
-    assert.equal(await changed.workflow.refresh(), true);
-    assert.equal(changed.workflow.approved('rename'), true);
-    assert.equal(await changed.workflow.rename(user, 'Other Name'), false);
-    assert.equal(changed.workflow.detail.reason, 'Extra data after guest ID');
-    assert.deepEqual(changed.signal.requests, [ident, list, list]);
+    const h = await harness(() => listReply(++reads === 1 ? full : empty.slice(0, 5)));
+    assert.equal(await h.workflow.refresh(), true);
+    assert.equal(await h.workflow.rename(user, 'Other Name'), false);
+    assert.equal(h.workflow.detail.reason, 'Missing profile field separator');
+    assert.deepEqual(h.signal.requests, [ident, list, list]);
 });
 
 test('Identity and RRR decode fail closed on partial or unknown values', () => {
@@ -226,7 +211,7 @@ test('Activation requires an independent exact active-account match before renam
     ]);
 });
 
-test('The approved build creates a profile, sets PIA, and renames it with extended account replies', async () => {
+test('Creates a profile, sets PIA, and renames it with extended account replies', async () => {
     let accounts = empty;
     const h = await harness((bytes) => {
         if (bytes[0] === 0x22) return listReply(accounts.concat(0xa5, 0x5a));
@@ -241,7 +226,7 @@ test('The approved build creates a profile, sets PIA, and renames it with extend
         }
         accounts = Array.from(Buffer.from([user, 'Zoë', added, 'Driver 2', '', '', guest].join('\0') + '\0'));
         return [0x6e, 0xe3, 0x35];
-    }, { options: { verified: approvedBuilds, firmware: () => software } });
+    });
     assert.equal(await h.workflow.refresh(), true);
     assert.equal(await h.workflow.create(), true);
     assert.equal(h.workflow.detail.id, added);
@@ -259,26 +244,16 @@ test('The approved build creates a profile, sets PIA, and renames it with extend
     ]);
 });
 
-test('Adjacent production builds and software variants remain read-only', async () => {
-    for (const variant of [{ ...software, version: 'L18_22w18.3-1-7' }, { ...software, variantId: 'mgu-low' }]) {
-        const h = await harness(() => listReply(full.concat(0xa5)), {
-            options: { verified: approvedBuilds, firmware: () => variant }
-        });
-        assert.equal(await h.workflow.refresh(), true);
-        assert.equal(await h.workflow.login(added), false);
-        assert.equal(h.workflow.detail.code, 'firmware');
-        assert.deepEqual(h.signal.requests, [ident, list]);
-    }
+test('An unrecognized SGBD index blocks profile commands', async () => {
+    const h = await harness(() => listReply(full), { identity: [0x62, 0xf1, 0x50, 0x0f, 0x25, 0xb1] });
+    assert.equal(await h.workflow.refresh(), false);
+    assert.equal(await h.workflow.login(added), false);
+    assert.equal(h.workflow.detail.code, 'variant');
+    assert.deepEqual(h.signal.requests, [ident]);
 });
 
-test('PIA requires its own firmware approval, an unchanged driver slot and Park at dispatch', async () => {
-    const locked = await harness(() => listReply(empty), { actions: ['create', 'login', 'rename'] });
-    await locked.workflow.refresh();
-    assert.equal(await locked.workflow.create(), false);
-    assert.equal(locked.workflow.detail.code, 'firmware');
-    assert.deepEqual(locked.signal.requests, [ident, list]);
-
-    const h = await harness(() => listReply(full), { actions: ['pia'], options: { pendingPiaId: added } });
+test('PIA requires the pending profile, an unchanged driver slot and Park at dispatch', async () => {
+    const h = await harness(() => listReply(full), { options: { pendingPiaId: added } });
     await h.workflow.refresh();
     assert.equal(await h.workflow.resumePia(guest, null), false);
     assert.equal(h.workflow.detail.code, 'profileMissing');
@@ -360,7 +335,7 @@ test('Failures identify result polling, PIA, activation and rename without recor
     }
 });
 
-test('Motion, unknown speed, stale samples, unknown firmware and disabled writes block dispatch', async () => {
+test('Motion, unknown speed, stale samples and disabled writes block dispatch', async () => {
     const zero = { value: { speedVehicleCentreOfGravity: 0 }, at: 100 };
     const gear = { value: 'P', at: 100 };
     const alternate = { value: 3, at: 100 };
@@ -374,11 +349,11 @@ test('Motion, unknown speed, stale samples, unknown firmware and disabled writes
     assert.match(parkingIssue({ value: { speedVehicleCentreOfGravity: 65535 }, at: 100 }, gear, 100), /invalid/);
     for (const [field, value, code] of [
         ['parked', false, 'parked'], ['speedKnown', false, 'parked'], ['enabled', false, 'writeDisabled'],
-        ['visible', false, 'writeDisabled'], ['version', 'other', 'firmware']
+        ['visible', false, 'writeDisabled']
     ]) {
         const h = await harness(() => listReply(empty));
         await h.workflow.refresh();
-        (field === 'version' ? h.version : h.state)[field] = value;
+        h.state[field] = value;
         assert.equal(await h.workflow.create(), false);
         assert.equal(h.workflow.detail.code, code);
         assert.deepEqual(h.signal.requests, [ident, list]);
@@ -451,8 +426,8 @@ test('SOME/IP reads the session reference twice and invalidates an active-accoun
     assert.equal(await vehicle.activeAccount(), null);
 });
 
-test('UI starts without UDS, opens in read-only mode, and recovers after link loss', async () => {
-    let visible = false, onVisible, value = true;
+test('UI starts with writes off, requires confirmation and recovers after link loss', async () => {
+    let visible = false, onVisible, value = true, opened;
     const clicks = {}, labels = {}, enabled = {};
     const ui = {
         isVisible: (name) => visible && name === 'MAIN', hasFocus: () => true,
@@ -461,7 +436,8 @@ test('UI starts without UDS, opens in read-only mode, and recovers after link lo
         text: async (name, text) => { labels[name] = text; },
         cells: async (name, row, fields) => { labels[name] = fields.Text1stRow; },
         visible: async () => {},
-        enabled: async (name, on) => { enabled[name] = on; }
+        enabled: async (name, on) => { enabled[name] = on; },
+        open: async (name) => { opened = name; }
     };
     const settings = { get: () => value, set: (key, v) => { value = v; }, onChange() {} };
     const signals = new FakeSignals((bytes) => bytes[1] === 0xf1 ? identReply : listReply(empty));
@@ -478,6 +454,7 @@ test('UI starts without UDS, opens in read-only mode, and recovers after link lo
     assert.equal(enabled.PROFILE_0, false);
     value = true;
     await clicks.CREATE();
+    assert.equal(opened, 'CREATE_WARNING');
     await clicks.PROFILE_0();
     assert.deepEqual(signals.requests, [ident, list]);
     signals.setAvailable(false);
@@ -521,7 +498,8 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
 
-test('UI retains an activation failure and supports switching and rename on the approved build', async () => {
+test('UI retains an activation failure and supports switching and rename on a different firmware build', async () => {
+    const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
     let activeId = user, userName = 'Zoë', denyActivation = true;
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {

@@ -89,7 +89,6 @@ class Vehicle {
                     this.alternateGear = { value: value && value.statusGearSelectionDrive, at: this.now() };
                 }
             }, silent, {
-                pollMs: 1000,
                 onAvailable: (up) => { if (!up) this.gear = this.alternateGear = null; }
             }).then((link) => { this.gearLink = link; }),
             this.initSession()
