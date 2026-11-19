@@ -1,0 +1,63 @@
+{
+  "id": "mirror_heat",
+  "title": "Mirror Heat Check",
+  "description": "Check BMW X5 G05 mirror heater status and run a timed 30-second BDC heater test.",
+  "version": "0.1.0",
+  "vendor": "ShoddySignal",
+  "loggingId": "MHCK",
+  "mguHmi": ["ID7"],
+  "license": "MIT",
+  "signals": {
+    "com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu": {
+      "_instances": "SystemFunctionsInternalTasuInst1",
+      "_methods": ["sendTasuRequest"],
+      "_broadcasts": ["sendTasuResponse"]
+    },
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "statusCarSpeed2": "rs",
+      "_optional": "The heater test requires a current vehicle speed"
+    },
+    "de.bmw.infrastructure.VehicleInformation": {
+      "statusGearboxDrive": "rs",
+      "DataPowerTrain2": "rs",
+      "_optional": "The heater test requires a current P selector status"
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "menu",
+      "items": [
+        ["text3", "STATUS", "Select Read status or Review heater test."],
+        ["text", "HEATING", "Heating status: —"],
+        ["text", "DEMAND", "Requested output: —"],
+        ["text", "PROTECTION", "Protection (D321): —"],
+        ["text", "PARKING", "Parking check: waiting for signals"],
+        ["button", "READ", "Read status"],
+        ["button", "REVIEW", "Review heater test"],
+        ["button", "CONFIRM", "Start 30 s at 100%"],
+        ["button", "DETAILS_OPEN", "Diagnostics"]
+      ]
+    },
+    {
+      "name": "DETAILS",
+      "kind": "menu",
+      "title": "Mirror heater diagnostics",
+      "items": [
+        ["text", "IDENT", "BDC SGBD: —"],
+        ["text", "CODED", "Mirror heating coded: —"],
+        ["text", "NSC", "NSC activation count: —"],
+        ["text", "R_HEAT", "D32D: —"],
+        ["text", "R_PROTECT", "D321: —"],
+        ["text", "R_COUNT", "2305: —"],
+        ["text", "R_EQUIPMENT", "E450: —"],
+        ["text", "R_TEST", "Test response: —"],
+        ["text3", "NOTE", "Compare both mirror surfaces. BDC data describes a shared command."]
+      ]
+    }
+  ],
+  "config": {
+    "fullScreenRequired": false,
+    "privateLogs": true
+  }
+}
