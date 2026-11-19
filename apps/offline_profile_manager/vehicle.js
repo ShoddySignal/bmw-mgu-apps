@@ -5,6 +5,8 @@ const GEAR = 'de.bmw.infrastructure.VehicleInformation';
 const SESSION = 'de.bmw.infotainment.personalization.SessionManager';
 const ACCOUNT = 'de.bmw.infotainment.personalization.UserAccount';
 const REFERENCE = 'currentUserAccountReference';
+const USER_CHANGED = 'currentUserOnChange';
+const ACCOUNT_AVAILABILITY_MS = 1000;
 const AGE_MS = 3000;
 const ACTIVE_AGE_MS = 750;
 const silent = { info() {}, warn() {} };
@@ -56,11 +58,27 @@ async function read(proxy, key) {
     return proxy.isAvailable() ? field(result, key) : null;
 }
 
+async function accountAvailable(proxy) {
+    if (proxy.isAvailable()) return true;
+    if (typeof proxy.waitUntilAvailable !== 'function') return false;
+    let timer;
+    try {
+        await Promise.race([
+            new Promise((resolve) => { timer = setTimeout(resolve, ACCOUNT_AVAILABILITY_MS); }),
+            proxy.waitUntilAvailable()
+        ]);
+        return proxy.isAvailable();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 class Vehicle {
-    constructor(signals, sessionInstance, now) {
+    constructor(signals, sessionInstance, now, onSessionChanged = () => {}) {
         this.signals = signals;
         this.sessionInstance = sessionInstance;
         this.now = now;
+        this.onSessionChanged = onSessionChanged;
         this.speed = null;
         this.gear = null;
         this.alternateGear = null;
@@ -100,8 +118,12 @@ class Vehicle {
         try {
             const proxy = await this.signals.proxy(SESSION, this.sessionInstance);
             this.sessionLink = proxy;
-            await this.signals.on(proxy, REFERENCE, () => { this.sessionEpoch++; }, silent);
-            await this.signals.onAvailable(proxy, () => { this.sessionEpoch++; });
+            const sessionChanged = () => {
+                this.sessionEpoch++;
+                this.onSessionChanged();
+            };
+            await this.signals.on(proxy, USER_CHANGED, sessionChanged, silent);
+            await this.signals.onAvailable(proxy, sessionChanged);
             this.watchedSession = true;
         } catch (e) {
             // The target firmware can omit the service or limit access for non-BMW apps.
@@ -123,8 +145,10 @@ class Vehicle {
             this.activeIssue = 'Active account reference unavailable';
             const reference = await read(this.sessionLink, REFERENCE);
             if (typeof reference !== 'string' || !reference || reference.length > 128 || /[\x00-\x1f\x7f]/.test(reference)) return null;
-            this.activeIssue = 'Active account ID unavailable';
+            this.activeIssue = 'UserAccount provider unavailable';
             account = await this.signals.proxy(ACCOUNT, reference);
+            if (!await accountAvailable(account)) return null;
+            this.activeIssue = 'Active account ID unavailable';
             const id = await read(account, 'id');
             if (typeof id !== 'string' || !id || /[^ -~]/.test(id)) return null;
             let type;
@@ -140,10 +164,13 @@ class Vehicle {
         }
     }
 
+    isCurrentAccount(active) {
+        return !!(active && this.sessionLink && this.sessionLink.isAvailable() && this.sessionEpoch === active.epoch);
+    }
+
     stillActive(active) {
         const age = this.now() - active.at;
-        return !!(this.watchedSession && this.sessionLink && this.sessionLink.isAvailable() &&
-            this.sessionEpoch === active.epoch && age >= 0 && age <= ACTIVE_AGE_MS);
+        return this.watchedSession && this.isCurrentAccount(active) && age >= 0 && age <= ACTIVE_AGE_MS;
     }
 }
 

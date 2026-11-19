@@ -79,7 +79,7 @@ async function harness(exchange, overrides = {}) {
     transport.busyLog = false;
     await transport.init();
     const diag = new ProfileDiag(transport, kit.replyTo);
-    const state = { speedKnown: true, parked: true, enabled: true, active: user, visible: true };
+    const state = { speedKnown: true, parked: true, active: user, visible: true };
     const vehicle = {
         parkingIssue: () => !state.speedKnown ? 'Speed sample missing or stale' :
             state.parked ? null : 'A selector signal reports a position other than P',
@@ -89,7 +89,6 @@ async function harness(exchange, overrides = {}) {
     let time = 0;
     const stages = [];
     const workflow = new Workflow(diag, vehicle, {
-        writeEnabled: () => state.enabled,
         visible: () => state.visible,
         changed: () => stages.push(workflow.state),
         wait: async (ms) => { time += ms; },
@@ -187,24 +186,34 @@ test('Creation is unconfirmed if the ECU finishes but the new ID is missing or m
 });
 
 test('Activation requires an independent exact active-account match before rename', async () => {
-    let activeName = 'TEST_NAME', change = false;
+    let activeName = 'TEST_NAME', change = false, elapsed = 0;
     const h = await harness((bytes) => {
         if (bytes[0] === 0x22) return listReply(Array.from(Buffer.from([user, 'Zoë', added, activeName, '', '', guest].join('\0') + '\0')));
         if (bytes[2] === 0x34) {
-            if (change) h.state.active = added;
+            if (change) elapsed = 0;
             return [0x6e, 0xe3, 0x34];
         }
         activeName = 'My Driver';
         return [0x6e, 0xe3, 0x35];
-    });
+    }, { options: {
+        now: () => elapsed,
+        wait: async (ms) => {
+            elapsed += ms;
+            if (change && elapsed >= 2500) h.state.active = added;
+        }
+    } });
     await h.workflow.refresh();
     assert.equal(await h.workflow.rename(added, 'My Driver'), false);
     assert.equal(h.workflow.detail.code, 'active');
     assert.ok(h.signal.requests.every((b) => b[0] === 0x22));
     assert.equal(await h.workflow.login(added), false);
     assert.equal(h.workflow.detail.code, 'active');
+    assert.equal(h.workflow.detail.request, '2E E3 34');
+    assert.equal(h.workflow.detail.reason, 'SessionManager still reports a different active account');
+    assert.equal(h.workflow.detail.afterAcceptance, true);
     change = true;
     assert.equal(await h.workflow.login(added), true);
+    assert.equal(elapsed, 2500);
     assert.equal(await h.workflow.rename(added, 'My Driver'), true);
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [
         loginRequest(added), loginRequest(added), renameRequest('My Driver')
@@ -335,7 +344,7 @@ test('Failures identify result polling, PIA, activation and rename without recor
     }
 });
 
-test('Motion, unknown speed, stale samples and disabled writes block dispatch', async () => {
+test('Motion, unknown speed, stale samples and interrupted confirmation block dispatch', async () => {
     const zero = { value: { speedVehicleCentreOfGravity: 0 }, at: 100 };
     const gear = { value: 'P', at: 100 };
     const alternate = { value: 3, at: 100 };
@@ -348,7 +357,7 @@ test('Motion, unknown speed, stale samples and disabled writes block dispatch', 
     assert.match(parkingIssue(zero, { value: 'N', at: 100 }, 100), /other than P/);
     assert.match(parkingIssue({ value: { speedVehicleCentreOfGravity: 65535 }, at: 100 }, gear, 100), /invalid/);
     for (const [field, value, code] of [
-        ['parked', false, 'parked'], ['speedKnown', false, 'parked'], ['enabled', false, 'writeDisabled'],
+        ['parked', false, 'parked'], ['speedKnown', false, 'parked'],
         ['visible', false, 'writeDisabled']
     ]) {
         const h = await harness(() => listReply(empty));
@@ -397,23 +406,29 @@ test('Repeated actions are serialized and transport loss clears the cached list'
     assert.equal(h.workflow.profiles[0].id, user);
 });
 
-test('SOME/IP reads the session reference twice and invalidates an active-account lease', async () => {
-    let notify, swapped = false, refs = 0, time = 10;
+test('SOME/IP waits for UserAccount and invalidates a rename lease on the SDK change broadcast', async () => {
+    let notify, swapped = false, refs = 0, time = 10, accountWaits = 0;
     const signals = {
         async proxy(iface) {
+            let available = iface.endsWith('SessionManager');
             return {
-                isAvailable: () => true,
+                isAvailable: () => available,
+                waitUntilAvailable: async () => { accountWaits++; available = true; },
                 getValue: async (key) => key === 'currentUserAccountReference' ?
                     { [key]: (swapped && ++refs === 2 ? 'new' : 'current') } :
                     { [key]: key === 'id' ? user : 'LOCAL' }
             };
         },
-        async on(p, name, handler) { notify = handler; },
+        async on(p, name, handler) {
+            assert.equal(name, 'currentUserOnChange');
+            notify = handler;
+        },
         async onAvailable(p, handler) { handler(true); }
     };
     const vehicle = new Vehicle(signals, '1', () => time);
     await vehicle.initSession();
     const active = await vehicle.activeAccount();
+    assert.equal(accountWaits, 1);
     assert.equal(active.id, user);
     assert.equal(active.type, 'local');
     assert.equal(vehicle.stillActive(active), true);
@@ -426,45 +441,57 @@ test('SOME/IP reads the session reference twice and invalidates an active-accoun
     assert.equal(await vehicle.activeAccount(), null);
 });
 
-test('UI starts with writes off, requires confirmation and recovers after link loss', async () => {
-    let visible = false, onVisible, value = true, opened;
+test('Create opens one confirmation and can be cancelled before sending a command', async () => {
+    let screen = null, onVisible;
     const clicks = {}, labels = {}, enabled = {};
+    function enter(name) {
+        const previous = screen;
+        screen = name;
+        if (previous) onVisible(previous, false);
+        onVisible(name, true);
+    }
     const ui = {
-        isVisible: (name) => visible && name === 'MAIN', hasFocus: () => true,
+        isVisible: (name) => screen === name, hasFocus: () => true,
         onVisible: (f) => { onVisible = f; }, onFocus() {},
         onClick: (name, f) => { clicks[name] = f; },
         text: async (name, text) => { labels[name] = text; },
         cells: async (name, row, fields) => { labels[name] = fields.Text1stRow; },
         visible: async () => {},
         enabled: async (name, on) => { enabled[name] = on; },
-        open: async (name) => { opened = name; }
+        open: async (name) => enter(name), close: async () => enter('MAIN')
     };
-    const settings = { get: () => value, set: (key, v) => { value = v; }, onChange() {} };
+    const settings = { get: () => null, set: () => assert.fail('No write setting is required') };
     const signals = new FakeSignals((bytes) => bytes[1] === 0xf1 ? identReply : listReply(empty));
     await start({ ui, settings, signals, spec }, kit, {});
     await new Promise(setImmediate);
-    assert.equal(value, false);
     assert.deepEqual(signals.requests, []);
-    visible = true;
-    onVisible('MAIN', true);
+    enter('MAIN');
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
     assert.deepEqual(signals.requests, [ident, list]);
     assert.equal(labels.PROFILE_0, 'Zoë');
-    assert.equal(enabled.CREATE, false);
-    assert.equal(enabled.PROFILE_0, false);
-    value = true;
+    assert.equal(enabled.CREATE, true);
+    assert.equal(clicks.OPEN_SETTINGS, undefined);
     await clicks.CREATE();
-    assert.equal(opened, 'CREATE_WARNING');
-    await clicks.PROFILE_0();
+    await new Promise(setImmediate);
+    assert.equal(screen, 'CONFIRM');
+    assert.match(labels.CONFIRM_TEXT, /Create a local profile\?.*physical key/);
+    assert.equal(labels.APPLY, 'Create profile');
     assert.deepEqual(signals.requests, [ident, list]);
+    await clicks.CANCEL_CONFIRM();
+    for (let i = 0; i < 5; i++) await new Promise(setImmediate);
+    assert.equal(screen, 'MAIN');
+    assert.deepEqual(signals.requests, [ident, list, ident, list]);
+
+    await clicks.CREATE();
     signals.setAvailable(false);
     for (let i = 0; i < 3; i++) await new Promise(setImmediate);
-    assert.equal(value, false);
-    assert.match(labels.STATUS, /connection to HU_MGU lost/i);
+    assert.match(labels.CONFIRM_TEXT, /connection to HU_MGU lost/i);
+    assert.equal(labels.APPLY, 'Back to profiles');
     signals.setAvailable(true);
+    await clicks.APPLY();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
-    assert.equal(labels.STATUS, 'Profiles refreshed.');
-    assert.deepEqual(signals.requests, [ident, list, ident, list]);
+    assert.equal(labels.STATUS, 'Active profile unavailable. See Diagnostics.');
+    assert.deepEqual(signals.requests, [ident, list, ident, list, ident, list]);
 });
 
 test('Diagnostics identifies a malformed startup reply and displays a 55-byte profile reply with extra data', async () => {
@@ -493,14 +520,14 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     accounts = empty.concat(Array(extraBytes).fill(0xa5));
     await clicks.REFRESH();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
-    assert.equal(labels.STATUS, 'Profiles refreshed.');
+    assert.equal(labels.STATUS, 'Active profile unavailable. See Diagnostics.');
     assert.equal(labels.NRC, 'Last error · 22 E3 33 · 8 UDS bytes · Missing profile field separator');
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
 
-test('UI retains an activation failure and supports switching and rename on a different firmware build', async () => {
+test('UI follows the active account, retains a failure and can discard a draft name', async () => {
     const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
-    let activeId = user, userName = 'Zoë', denyActivation = true;
+    let activeId = user, userName = 'Zoë', denyActivation = true, sessionChanged;
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {
             if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => 'current' };
@@ -513,6 +540,11 @@ test('UI retains an activation failure and supports switching and rename on a di
         async onAvailable(proxy, handler) {
             if (proxy.isAvailable) handler(true);
             else await super.onAvailable(proxy, handler);
+        }
+
+        async on(proxy, name, handler) {
+            if (name === 'currentUserOnChange') sessionChanged = handler;
+            else await super.on(proxy, name, handler);
         }
 
         async watch(iface, instance, handlers) {
@@ -530,13 +562,14 @@ test('UI retains an activation failure and supports switching and rename on a di
         if (bytes[2] === 0x34) {
             if (denyActivation) return [0x7f, 0x2e, 0x22];
             activeId = added;
+            sessionChanged();
             return [0x6e, 0xe3, 0x34];
         }
         assert.equal(activeId, user);
         userName = 'A';
         return [0x6e, 0xe3, 0x35];
     });
-    let screen = null, onVisible, onSetting;
+    let screen = null, onVisible;
     const clicks = {}, labels = {}, enabled = {}, values = {};
     function enter(name) {
         const previous = screen;
@@ -549,27 +582,29 @@ test('UI retains an activation failure and supports switching and rename on a di
         onVisible: (f) => { onVisible = f; }, onFocus() {},
         onClick: (name, f) => { clicks[name] = f; },
         text: async (name, value) => { labels[name] = value; },
-        cells: async () => {}, visible: async () => {}, selected: async () => {},
+        cells: async (name, row, fields) => { labels[name] = fields.Text1stRow; },
+        visible: async () => {}, selected: async () => {},
         enabled: async (name, value) => { enabled[name] = value; },
         open: async (name) => enter(name), close: async () => enter('MAIN')
     };
     const settings = {
         get: (key) => values[key],
-        set: (key, value) => { values[key] = value; if (onSetting) onSetting(); },
-        onChange: (f) => { onSetting = f; }
+        set: (key, value) => { values[key] = value; }
     };
     const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(setImmediate); };
     await start({ ui, settings, signals, spec }, kit,
         { config: { get: () => '1' }, runtimeVariant: { getSoftwareVersion: () => software } });
-    settings.set('writes', true);
     enter('MAIN');
     await settle();
     assert.equal(labels.PARK, 'Parked · Verified');
     assert.equal(labels.NRC, '22 E3 33 · Skipped 1 bytes after guest ID.');
+    assert.equal(labels.PROFILE_0, 'Active · Zoë');
+    assert.equal(labels.PROFILE_1, 'TEST_NAME');
     assert.equal(enabled.PROFILE_0, false);
     assert.equal(enabled.PROFILE_1, true);
     await clicks.PROFILE_1();
     assert.equal(labels.CONFIRM_TEXT, 'Activate profile “TEST_NAME”?');
+    assert.ok(signals.requests.every((bytes) => bytes[0] === 0x22));
     await clicks.APPLY();
     assert.match(labels.CONFIRM_TEXT, /NRC 0x22/);
     await clicks.APPLY();
@@ -583,13 +618,36 @@ test('UI retains an activation failure and supports switching and rename on a di
     await clicks.APPLY();
     await settle();
     assert.equal(enabled.PROFILE_1, false);
+    assert.equal(labels.PROFILE_0, 'Zoë');
+    assert.equal(labels.PROFILE_1, 'Active · TEST_NAME');
 
-    enter(null);
-    activeId = user; // The driver switched profiles in the stock UI.
-    enter('MAIN');
+    activeId = 'UNKNOWN';
+    sessionChanged();
     await settle();
+    assert.equal(labels.STATUS, 'Active profile unavailable. See Diagnostics.');
+    assert.equal(labels.PROFILE_1, 'TEST_NAME');
+    assert.equal(enabled.RENAME, false);
+
+    activeId = user; // The driver switched profiles in the stock UI.
+    sessionChanged();
+    await settle();
+    assert.equal(labels.PROFILE_0, 'Active · Zoë');
+    assert.equal(labels.PROFILE_1, 'TEST_NAME');
+    assert.equal(enabled.RENAME, true);
+    await clicks.DIAGNOSTICS();
+    assert.equal(screen, 'DETAILS');
+    await clicks.DETAILS_BACK();
+    await settle();
+    assert.equal(screen, 'MAIN');
     await clicks.RENAME();
     assert.equal(labels.CURRENT_PROFILE, 'Current profile · Zoë');
+    clicks.ADD_CHARACTER();
+    await clicks.CANCEL_EDIT();
+    await settle();
+    assert.equal(screen, 'MAIN');
+    await clicks.RENAME();
+    await settle();
+    assert.equal(labels.DRAFT, 'New name · —');
     clicks.ADD_CHARACTER();
     await clicks.RENAME_NEXT();
     assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “Zoë” to “A”?');

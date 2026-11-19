@@ -2,7 +2,7 @@
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
   "description": "Driver profile management for BMW iDrive 7. Diagnostics tested on BMW X5 G05 with L18_22w18.3-1-6 (mgu-high).",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
   "mguHmi": [
@@ -37,11 +37,6 @@
       "title": "Offline Profile Manager",
       "items": [
         [
-          "text",
-          "CONNECTION",
-          "Connecting to HU_MGU"
-        ],
-        [
           "text3",
           "STATUS",
           "Reading profiles"
@@ -64,11 +59,6 @@
         ],
         [
           "button",
-          "REFRESH",
-          "Refresh profiles"
-        ],
-        [
-          "button",
           "CREATE",
           "Create offline profile"
         ],
@@ -79,48 +69,13 @@
         ],
         [
           "button",
-          "OPEN_SETTINGS",
-          "Write settings"
+          "REFRESH",
+          "Refresh profiles"
         ],
         [
           "button",
           "DIAGNOSTICS",
           "Diagnostics"
-        ]
-      ]
-    },
-    {
-      "name": "SETTINGS",
-      "kind": "menu",
-      "title": "Write settings",
-      "items": [
-        [
-          "text3",
-          "SETTINGS_WARNING",
-          "Writes can affect BMW ID and Digital Key. Keep your physical key with you. Enable writes only when parked."
-        ],
-        [
-          "text",
-          "WRITE_STATE",
-          "Checking HU_MGU"
-        ]
-      ],
-      "settings": true
-    },
-    {
-      "name": "CREATE_WARNING",
-      "kind": "menu",
-      "title": "Create profile",
-      "items": [
-        [
-          "text3",
-          "CREATE_RISK",
-          "Creating a profile can affect BMW ID and Digital Key. Make sure you have your physical key."
-        ],
-        [
-          "button",
-          "CREATE_NEXT",
-          "I have my key. Continue"
         ]
       ]
     },
@@ -138,6 +93,11 @@
           "button",
           "APPLY",
           "Confirm"
+        ],
+        [
+          "button",
+          "CANCEL_CONFIRM",
+          "Cancel"
         ]
       ]
     },
@@ -246,6 +206,11 @@
           "button",
           "RENAME_NEXT",
           "Continue"
+        ],
+        [
+          "button",
+          "CANCEL_EDIT",
+          "Cancel"
         ]
       ]
     },
@@ -283,16 +248,13 @@
           "text3",
           "NRC",
           "ECU response"
+        ],
+        [
+          "button",
+          "DETAILS_BACK",
+          "Back to profiles"
         ]
       ]
-    }
-  ],
-  "settings": [
-    {
-      "key": "writes",
-      "label": "Allow writes until the app restarts",
-      "type": "bool",
-      "default": false
     }
   ],
   "config": {

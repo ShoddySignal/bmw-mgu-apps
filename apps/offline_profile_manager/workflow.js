@@ -2,13 +2,14 @@
 
 const { DiagnosticError, createdProfile } = require('./profiles');
 const { loginRequest, validName } = require('./diag');
+const ACTIVATION_CONFIRMATION_MS = 8000;
+const ACTIVATION_POLL_MS = 500;
 
 class Workflow {
-    constructor(diag, vehicle, { writeEnabled, visible, changed, wait, now,
+    constructor(diag, vehicle, { visible, changed, wait, now,
         pendingPiaId, savePendingPia = () => {} }) {
         this.diag = diag;
         this.vehicle = vehicle;
-        this.writeEnabled = writeEnabled;
         this.visible = visible;
         this.changed = changed;
         this.wait = wait;
@@ -106,7 +107,7 @@ class Workflow {
 
     permit(current, active) {
         current();
-        if (!this.writeEnabled() || !this.visible()) throw new DiagnosticError('writeDisabled');
+        if (!this.visible()) throw new DiagnosticError('writeDisabled');
         if (!this.identity || !this.identity.isMgu) throw new DiagnosticError('variant');
         const parkingIssue = this.vehicle.parkingIssue();
         if (parkingIssue) throw Object.assign(new DiagnosticError('parked'), { reason: parkingIssue });
@@ -182,20 +183,27 @@ class Workflow {
             await this.diag.login(account.id, () => this.permit(current));
             current();
             this.stage('accepted');
-            for (let attempt = 0; attempt < 4; attempt++) {
-                if (attempt > 0) await this.wait(500);
+            const deadline = this.now() + ACTIVATION_CONFIRMATION_MS;
+            let reason;
+            do {
                 current();
                 const active = await this.vehicle.activeAccount();
                 current();
+                reason = active ? 'SessionManager still reports a different active account' :
+                    this.vehicle.activeIssue || 'Active account unavailable';
                 if (active && active.id === account.id) {
                     await this.readProfiles(current);
                     if (this.active && this.active.id === account.id) {
                         this.stage('confirmed', { action: 'login', id: account.id });
                         return;
                     }
+                    reason = this.vehicle.activeIssue || 'Active account could not be matched to the refreshed profile list';
                 }
-            }
-            throw new DiagnosticError('active');
+                const remaining = deadline - this.now();
+                if (remaining <= 0) break;
+                await this.wait(Math.min(remaining, ACTIVATION_POLL_MS));
+            } while (this.now() < deadline);
+            throw Object.assign(new DiagnosticError('active'), { request: '2E E3 34', reason });
         });
     }
 
