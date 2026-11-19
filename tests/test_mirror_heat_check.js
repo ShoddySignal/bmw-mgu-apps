@@ -12,7 +12,7 @@ const { signals, screens } = require('../apps/mirror_heat_check/app.json');
 
 const OFF = [0x62, 0xd3, 0x2d, 0, 0, 0, 0];
 const ON = [0x62, 0xd3, 0x2d, 0, 1, 0, 100];
-const WRITE = [0x2e, 0xd3, 0x2d, 0, 4, 0, 30];
+const WRITE = [0x2e, 0xd3, 0x2d, 0x00, 0x04, 0x00, 0xf0];
 const FAULTS = [0x19, 0x02, 0x0c];
 
 function harness(options = {}) {
@@ -44,10 +44,11 @@ function harness(options = {}) {
         let reply;
         if (frame.serviceID === 0x2e) {
             assert.deepEqual(bytes, WRITE);
+            assert.equal(monitor.remaining(), 240);
             if (options.hideBeforeWriteReply) monitor.setVisible(false);
             if (options.refuse) reply = [0x7f, 0x2e, 0x22];
             else {
-                heatedUntil = clock + 30000;
+                heatedUntil = clock + 240000;
                 reply = options.loseAck ? [0x6e, 0xd3, 0x2d, 0xff] : [0x6e, 0xd3, 0x2d];
             }
         } else if (frame.serviceID === 0x19) {
@@ -141,8 +142,10 @@ test('reads a snapshot without writing and sends exactly one fixed write with a 
     assert.deepEqual(h.writes(), []);
     assert.deepEqual(h.calls.at(-1), FAULTS);
     h.monitor.review();
+    assert.match(h.monitor.message, /240 seconds/);
     await Promise.all([h.monitor.confirm(), h.monitor.confirm()]);
     assert.deepEqual(h.writes(), [WRITE]);
+    assert.equal(h.monitor.remaining(), 0);
     const text = labels(h.monitor);
     assert.match(text.R_TEST, /Accepted · 6E D3 2D/);
     assert.match(text.BEFORE, /OFF · 0%/);
@@ -266,7 +269,8 @@ test('keeps the reply when Diagnostics is opened before the write acknowledgemen
 
 test('transport rejects alternate writes, chassis services and changed test duration', async () => {
     const h = harness();
-    for (const [sid, data] of [[0x2e, [0xd3, 0x2d, 0, 4, 0, 31]], [0x2e, [0xd3, 0x2d, 0, 0, 0, 0]],
+    for (const [sid, data] of [[0x2e, [0xd3, 0x2d, 0, 4, 0, 30]], [0x2e, [0xd3, 0x2d, 0, 4, 0, 241]],
+        [0x2e, [0xd3, 0x2d, 0, 0, 0, 0]],
         [0x10, [3]], [0x22, [0xf1, 0x90]], [0x19, [0x02, 0xff]], [0x14, [0xff, 0xff, 0xff]]]) {
         await assert.rejects(h.diag.request(sid, data, () => {}), /Request blocked/);
     }

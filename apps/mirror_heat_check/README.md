@@ -1,6 +1,6 @@
 # Mirror Heat Check for iDrive 7
 
-Mirror Heat Check tests exterior mirror heating on the BMW X5 G05 with BDC_G05. **Read status** checks the BDC heater state, requested output, protection flag, equipment coding, NSC activation count, and mirror fault memory. **Review heater test → Start 30 s at 100%** asks the BDC to run the heater for 30 seconds. The app monitors the acknowledgement and the reported heater status before, during, and after the test. Rapid repeated presses send a single request.
+Mirror Heat Check tests exterior mirror heating on the BMW X5 G05 with BDC_G05. **Read status** checks the BDC heater state, requested output, protection flag, equipment coding, NSC activation count, and mirror fault memory. **Review heater test → Start 4 min at 100%** requests the BDC's documented maximum test duration of 240 seconds. The app monitors the acknowledgement and the reported heater status before, during, and after the test. Rapid repeated presses send a single request.
 
 ## Install from USB
 
@@ -19,7 +19,7 @@ python3 tools/build_mgu_app.py mirror_heat_check --test
 ## Test on the vehicle
 
 1. Stop the vehicle, engage the parking brake, and select P. Open **Mirror Heat Check → Read status**. Confirm that **Diagnostics** shows BDC SGBD index `0F2680`. Record the starting temperature of both mirror surfaces, for example with a contact thermometer.
-2. On the main screen, select **Review heater test**, then **Start 30 s at 100%**. The app requires current signals for P and 0 km/h, a valid BDC heater status reply, and an inactive protection flag. Let the test finish with the main screen open.
+2. On the main screen, select **Review heater test**, then **Start 4 min at 100%**. The app requires current signals for P and 0 km/h, a valid BDC heater status reply, and an inactive protection flag. Let the test finish with the main screen open.
 3. Open **Diagnostics**. **Last test reply** shows whether the app sent the request and whether the BDC acknowledged it. A positive reply is `6E D3 2D`. The status snapshots show the shared BDC request and whether the BDC already reported ON before the test. Normal vehicle-controlled heating may remain active after the test.
 4. Measure each mirror surface separately and compare it with its starting temperature. If a mirror remains cold, check **Mirror faults** for pending and stored codes related to the heater circuit and mirror LIN modules. Select **Read status** to query fault memory again.
 

@@ -3,8 +3,8 @@
 const ADDRESS = 0x40;
 const INDEX = '0F2680';
 const DIDS = Object.freeze({ ident: 0xf150, heating: 0xd32d, protection: 0xd321, counter: 0x2305, equipment: 0xe450 });
-const TEST_SECONDS = 30;
-const ACTIVATE = Object.freeze([0xd3, 0x2d, 0x00, 0x04, 0x00, TEST_SECONDS]);
+const TEST_SECONDS = 240;
+const ACTIVATE = Object.freeze([0xd3, 0x2d, 0x00, 0x04, TEST_SECONDS >> 8, TEST_SECONDS & 0xff]);
 const FAULT_QUERY = Object.freeze([0x02, 0x0c]);
 const MIRROR_FAULTS = Object.freeze({
     '804246': 'Left heater or electrochromic dimming',

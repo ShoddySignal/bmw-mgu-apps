@@ -67,7 +67,7 @@ class Monitor {
             this.message = 'Select P at 0 km/h. Waiting for current vehicle signals.';
         } else {
             this.confirmUntil = this.now() + CONFIRM_MS;
-            this.message = 'Confirm 100% for 30 seconds. Check both mirror surfaces.';
+            this.message = `Confirm 100% for ${TEST_SECONDS} seconds. Check both mirror surfaces.`;
         }
     }
 
@@ -144,7 +144,7 @@ class Monitor {
                 return;
             }
 
-            this.message = 'Sending the 30-second test...';
+            this.message = 'Sending the heater test...';
             try {
                 test.raw = await this.diag.activate(() => {
                     guard();
