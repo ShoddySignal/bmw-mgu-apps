@@ -49,25 +49,50 @@ function loadConfig(iface) {
  * show up without waiting for the next change.
  * opts.pollMs: also re-read those fields that often while the provider is available - for
  * fields a car may not notify (BMW's x_call only ever reads TPMS, it never subscribes).
+ * opts.polling: false starts with getter reads paused. setPolling resumes them.
  */
 async function watch(iface, instance, handlers, log, opts) {
-    const res = { iface, available: false, proxy: null, error: null, shutdown: () => Promise.resolve() };
+    const res = {
+        iface, available: false, proxy: null, error: null,
+        shutdown: () => Promise.resolve(), setPolling() {}
+    };
     if (!someip) { res.error = 'someip native module not available'; return res; }
     try {
         const cfg = loadConfig(iface);
         const p = await nativeTick(() => someip.buildProxy(cfg, String(instance)).then((px) => px.init().then(() => px)));
         res.proxy = p;
-        res.shutdown = () => Promise.resolve().then(() => p.shutdown && p.shutdown()).catch(() => {});
         const fields = Object.keys(handlers || {});
-        let availabilityEpoch = 0;
-        const fetchAll = () => fields.forEach((f) => {
-            if (cfg.fields && cfg.fields[f] && cfg.fields[f].getter) {
-                const epoch = availabilityEpoch;
-                p.getValue(f, 3000).then((v) => {
-                    if (!opts || !opts.onAvailable || (res.available && availabilityEpoch === epoch)) handlers[f](v);
-                }).catch(() => {});
+        const pollMs = opts && opts.pollMs;
+        let availabilityEpoch = 0, pollingEpoch = 0, interval;
+        let polling = !pollMs, stopped = false;
+        const fetchAll = () => {
+            if (!polling || stopped || (pollMs && !res.available)) return;
+            const epoch = availabilityEpoch;
+            const readEpoch = pollingEpoch;
+            fields.forEach((f) => {
+                if (cfg.fields && cfg.fields[f] && cfg.fields[f].getter) {
+                    p.getValue(f, 3000).then((v) => {
+                        const current = !opts || !opts.onAvailable || (res.available && availabilityEpoch === epoch);
+                        if (current && !stopped && pollingEpoch === readEpoch) handlers[f](v);
+                    }).catch(() => {});
+                }
+            });
+        };
+        res.setPolling = (enabled) => {
+            if (!pollMs || stopped || polling === enabled) return;
+            polling = enabled;
+            pollingEpoch++;
+            clearInterval(interval);
+            if (enabled) {
+                setImmediate(fetchAll);
+                interval = setInterval(() => { if (res.available) setImmediate(fetchAll); }, pollMs);
             }
-        });
+        };
+        res.shutdown = () => {
+            stopped = true;
+            clearInterval(interval);
+            return Promise.resolve().then(() => p.shutdown && p.shutdown()).catch(() => {});
+        };
         await nativeTick(() => {
             try {
                 return p.subscribeToAvailability((a) => {
@@ -88,7 +113,7 @@ async function watch(iface, instance, handlers, log, opts) {
             }
         }
         if (p.isAvailable && p.isAvailable()) { res.available = true; fetchAll(); }
-        if (opts && opts.pollMs) setInterval(() => { if (res.available) setImmediate(fetchAll); }, opts.pollMs);
+        if (pollMs && opts.polling !== false) res.setPolling(true);
     } catch (e) {
         res.error = String(e);
         if (log) log.warn('signals ' + iface + ': ' + e);

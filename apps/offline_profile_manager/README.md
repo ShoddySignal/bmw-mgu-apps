@@ -16,11 +16,13 @@ The **Driver profiles** counter shows how many of the three driver slots are in 
 
 1. With the vehicle in P, choose **Create offline profile** and confirm. The app verifies the new account and applies permanent PIA mode to its slot. The confirmation screen shows the new profile's name.
 2. Select the profile in **CAR → Driver Profiles** in iDrive or select its row in the app and confirm activation.
-3. Choose **Rename active profile** to open the iDrive text entry screen. Enter a name using Latin letters (A–Z), Russian letters, digits, spaces, hyphens, or underscores, then select **OK**. The app allows up to 24 UTF-8 bytes, which fits 24 ASCII characters or 12 Russian letters. Use iDrive **Back** to cancel input. After **OK**, the app shows the old and new names for confirmation and checks the active account again before writing.
+3. Choose **Rename active profile** to open the iDrive text entry screen. Enter a name using any language offered by the iDrive keyboard, then select **OK**. The app removes control characters and shows the resulting name for confirmation. It checks the active account again before writing. Use iDrive **Back** to cancel input.
 
 The app refreshes the profile list when you return to the main screen. If creation succeeds and permanent PIA setup is interrupted, choose **Finish profile setup** to continue with the saved account.
 
 After the ECU reports creation success, the app polls the profile list for up to eight seconds. If it still cannot identify exactly one new driver profile, **Diagnostics** shows why. Use **Refresh profiles** or check **CAR → Driver Profiles** to see whether the profile appeared.
+
+The app accepts names of up to 24 UTF-8 bytes after removing control characters. For example, 24 ASCII characters, 12 Russian letters, or 8 common Chinese characters fit the limit. Longer names produce a message before confirmation. If the ECU rejects a name, **Diagnostics** shows its refusal code when available.
 
 ## Validate on the vehicle
 
@@ -31,7 +33,7 @@ After the ECU reports creation success, the app polls the profile list for up to
 
 **Diagnostics** keeps the last failure available after refreshing the list. It shows the command or operation, the reason and, where available, the ECU refusal code or reply length. It also explains why the app could not confirm Park or the active profile. Share those lines with the SGBD index and software version.
 
-Choose **Diagnostics → Show account details** to compare IDs and names from iDrive and `22 E3 33`. The match counts show how many profiles match either system identifier and how many match the exact system name. Quoted text shows UTF-8 byte lengths, `\x20` for spaces and Unicode escapes for non-ASCII characters. Each driver slot shows the length and first 48 raw name bytes from the ECU in HEX, with `…` marking longer fields. These bytes are available even if a name fails UTF-8 decoding. The app keeps these values on this screen and clears the display when you leave.
+Choose **Diagnostics → Show account details** to compare IDs and names from iDrive and `22 E3 33`. The overview shows the match counts. Use the iDrive controller to open **System account**, a driver slot, or **Guest account**. Press **Back** to return to the overview. Quoted text shows UTF-8 byte lengths, `\x20` for spaces and Unicode escapes for non-ASCII characters. Each driver slot shows the length and first 48 raw name bytes from the ECU in HEX, with `…` marking longer fields. These bytes are available even if a name fails UTF-8 decoding. The app clears the values when you leave their page.
 
 On the tested G05, an E333 ID such as `i02\x20\x20\x20\x20` includes four spaces supplied by HU_MGU. The app uses all seven bytes when switching profiles. To mark a profile **Active**, it can match that ID to the SessionManager reference ending in `UserAccountManager.i02`. This works even when two profiles share a name. With zero identifier matches, the app checks for a unique exact name. [Profile IDs and active account](../../docs/HU_MGU_PRG_AUDIT.md#profile-ids-and-active-account)
 

@@ -232,9 +232,16 @@ def build_ui(spec):
         widget = 'LT_State_Laptimer' if kind == 'canvas' else 'LT_State_Wide' if kind in ('settings', 'menu') else 'LT_State_Regular_ContentHidden'
         cont = {'type': 'state', 'name': scr['name'], 'components': {}}
         x = [f'    <container id="{cid}" type="state" widget="{widget}">']
-        if main_id is not None and scr.get('parent', True):
-            x.append(f'        <property id="9" value="{main_id}"/>')
-            cont['properties'] = {'ParentState': {'value': main_id, 'type': 'UInt'}}
+        parent = scr.get('parent', True)
+        if isinstance(parent, str):
+            parent_id = state_ids.get(parent)
+            if parent_id is None or parent_id == cid:
+                raise ValueError(f'{scr["name"]} must reference an earlier parent screen: {parent}')
+        else:
+            parent_id = main_id if parent else None
+        if parent_id is not None:
+            x.append(f'        <property id="9" value="{parent_id}"/>')
+            cont['properties'] = {'ParentState': {'value': parent_id, 'type': 'UInt'}}
         groups = []
         if kind == 'canvas':
             items = []

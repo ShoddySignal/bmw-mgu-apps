@@ -155,10 +155,19 @@ test('Exact account and PIA request bytes, no guessed padding', () => {
     assert.deepEqual(piaRequest(10, 2), [0x31, 1, 2, 8, 4, 10, 2]);
     assert.throws(() => loginRequest('SHORT'), { code: 'id' });
     assert.throws(() => loginRequest('A\0B0001'), { code: 'id' });
-    assert.throws(() => renameRequest('Zoë'), { code: 'name' });
-    assert.throws(() => renameRequest('Я'.repeat(13)), { code: 'name' });
-    assert.throws(() => renameRequest('БМВ\0'), { code: 'name' });
     assert.throws(() => piaRequest(15, 2), { code: 'argument' });
+});
+
+test('Rename counts UTF-8 bytes after stripping controls and keeps script joiners', () => {
+    for (const name of ['Zoë 日本語', 'العربية', 'می\u200cروم', '👩\u200d💻', '字'.repeat(8)]) {
+        const nameBytes = Buffer.from(name, 'utf8');
+        assert.deepEqual(renameRequest('\ufeff' + name + '\0\n\u0085\u202e\ud800'), [0x2e, 0xe3, 0x35, ...nameBytes, 0]);
+    }
+    assert.deepEqual(renameRequest(' A\u200b\0B '), [0x2e, 0xe3, 0x35, 0x20, 0x41, 0x42, 0x20, 0]);
+    assert.throws(() => renameRequest(' \u200d\u202e\0'), { code: 'name' });
+    for (const name of ['A'.repeat(25), 'Я'.repeat(13), '字'.repeat(8) + 'A']) {
+        assert.throws(() => renameRequest(name), { code: 'nameTooLong' });
+    }
 });
 
 test('UDS decodes echo, NRC and response pending separately', () => {
@@ -372,7 +381,7 @@ test('A unique system name identifies the active row and rename checks the same 
 
     h.state.active = expected.id;
     h.signal.beforeCall = null;
-    assert.equal(await h.workflow.rename(added, 'New Name', expected), true);
+    assert.equal(await h.workflow.rename(added, 'New \u202eName', expected), true);
     assert.equal(h.workflow.profiles.find((p) => p.id === added).name, 'New Name');
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), renameRequest('New Name')]);
 });
@@ -598,6 +607,52 @@ test('SOME/IP waits for UserAccount and invalidates a rename lease on the SDK ch
     assert.equal(await vehicle.activeAccount(), null);
 });
 
+test('Paused vehicle signal polling stops its timer and ignores a read already in progress', async () => {
+    const signalsPath = require.resolve('../kit/runtime/signals');
+    const signalModule = { exports: {} };
+    const reads = [], intervals = new Set(), samples = [];
+    const proxy = {
+        init: async () => {}, subscribeToAvailability: async () => {}, subscribe: async () => {},
+        isAvailable: () => true,
+        getValue: () => new Promise((resolve) => reads.push(resolve))
+    };
+    runInNewContext(readFileSync(signalsPath, 'utf8'), {
+        __dirname: require('node:path').dirname(signalsPath), module: signalModule, setImmediate,
+        require(name) {
+            if (name === 'someip') return { buildProxy: async () => proxy };
+            if (name === 'fs') return { readFileSync: () => '{"fields":{"speed":{"getter":true}}}' };
+            return require(name);
+        },
+        setInterval(callback) { intervals.add(callback); return callback; },
+        clearInterval(callback) { intervals.delete(callback); }
+    });
+    const link = await signalModule.exports.watch('Vehicle2', '1', { speed: (value) => samples.push(value) },
+        null, { polling: false, pollMs: 1000 });
+    const tick = () => new Promise(setImmediate);
+    await tick();
+    assert.equal(reads.length, 0);
+    assert.equal(intervals.size, 0);
+    link.setPolling(true);
+    await tick();
+    assert.equal(intervals.size, 1);
+    assert.equal(reads.length, 1);
+
+    link.setPolling(false);
+    assert.equal(intervals.size, 0);
+    reads[0](10);
+    await tick();
+    assert.deepEqual(samples, []);
+
+    link.setPolling(true);
+    await tick();
+    assert.equal(reads.length, 2);
+    reads[1](0);
+    await tick();
+    assert.deepEqual(samples, [0]);
+    await link.shutdown();
+    assert.equal(intervals.size, 0);
+});
+
 test('Create opens one confirmation and can be cancelled before sending a command', async () => {
     let screen = null, onVisible;
     const clicks = {}, labels = {}, enabled = {};
@@ -693,12 +748,14 @@ test('UI renders account details without Array.flatMap and still supports profil
     const uiPath = require.resolve('../apps/offline_profile_manager/ui');
     const appModule = { exports: {} };
     runInNewContext('delete Array.prototype.flatMap;\n' + readFileSync(uiPath, 'utf8'), {
-        module: appModule, require: createRequire(uiPath), Buffer, setImmediate, setInterval, clearInterval
+        module: appModule, require: createRequire(uiPath), Buffer,
+        setImmediate, setInterval, clearInterval, setTimeout, clearTimeout
     }, { filename: uiPath });
     const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
     let activeId = user, userName = 'Zoë', denyActivation = true, sessionChanged;
     let reference = 'current', diagnosticNameBytes, systemName;
     let thirdProfile = ['', ''];
+    const speedPolling = [];
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {
             if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => reference };
@@ -720,9 +777,15 @@ test('UI renders account details without Array.flatMap and still supports profil
             else await super.on(proxy, name, handler);
         }
 
-        async watch(iface, instance, handlers) {
-            if (iface.endsWith('Vehicle2')) handlers.statusCarSpeed2({ speedVehicleCentreOfGravity: 0 });
-            else handlers.DataPowerTrain2({ statusGearSelectionDrive: 'P' });
+        async watch(iface, instance, handlers, log, opts) {
+            if (iface.endsWith('Vehicle2')) {
+                assert.equal(opts.polling, false);
+                return { available: true, setPolling(enabled) {
+                    speedPolling.push(enabled);
+                    if (enabled) handlers.statusCarSpeed2({ speedVehicleCentreOfGravity: 0 });
+                } };
+            }
+            handlers.DataPowerTrain2({ statusGearSelectionDrive: 'P' });
             return { available: true };
         }
     }
@@ -747,7 +810,7 @@ test('UI renders account details without Array.flatMap and still supports profil
         return [0x6e, 0xe3, 0x35];
     });
     let screen = null, onVisible;
-    const clicks = {}, labels = {}, enabled = {}, values = {};
+    const clicks = {}, labels = {}, enabled = {}, shown = {}, values = {};
     function enter(name) {
         const previous = screen;
         screen = name;
@@ -760,9 +823,9 @@ test('UI renders account details without Array.flatMap and still supports profil
         onClick: (name, f) => { clicks[name] = f; },
         text: async (name, value) => { labels[name] = value; },
         cells: async (name, row, fields) => { labels[name] = fields.Text1stRow; },
-        visible: async () => {}, selected: async () => {},
+        visible: async (name, value) => { shown[name] = value; }, selected: async () => {},
         enabled: async (name, value) => { enabled[name] = value; },
-        open: async (name) => enter(name), close: async (name) => enter(name === 'ACCOUNT_IDS' ? 'DETAILS' : 'MAIN')
+        open: async (name) => enter(name), close: async (name) => enter(spec.screens.find((s) => s.name === name).parent || 'MAIN')
     };
     const settings = {
         get: (key) => values[key],
@@ -796,6 +859,7 @@ test('UI renders account details without Array.flatMap and still supports profil
         { config: { get: () => '1' }, runtimeVariant: { getSoftwareVersion: () => software } });
     enter('MAIN');
     await settle();
+    assert.deepEqual(speedPolling, [false, true]);
     assert.equal(labels.PARK, 'Parked · Verified');
     assert.equal(labels.PROFILE_CAPACITY, 'Driver profiles · 2 of 3');
     assert.equal(enabled.CREATE, true);
@@ -838,16 +902,41 @@ test('UI renders account details without Array.flatMap and still supports profil
     await clicks.SHOW_ACCOUNT_IDS();
     await settle();
     assert.equal(screen, 'ACCOUNT_IDS');
+    assert.equal(labels.ACCOUNT_MATCHES, 'Matches · ID/reference 0 · Exact name 1');
+    assert.equal(labels.OPEN_SLOT_1, 'Slot 1 · Zoë');
+    assert.equal(labels.OPEN_SLOT_2, 'Slot 2 · TEST_NAME');
+    assert.equal(labels.OPEN_SLOT_3, 'Slot 3 · Empty');
+    assert.equal(labels.SYSTEM_ACCOUNT_ID, undefined);
+    const navigate = async (button, target) => {
+        await clicks[button]();
+        await settle();
+        assert.equal(screen, target);
+    };
+    await navigate('OPEN_SYSTEM_ACCOUNT', 'ACCOUNT_SYSTEM');
     assert.equal(labels.SYSTEM_ACCOUNT_ID, 'UserAccount.id · 8 bytes · "UNKNOWN\\x20"');
     assert.equal(labels.SESSION_REFERENCE, 'SessionManager reference · 10 bytes · "Account\\x20\\u03A9"');
     assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 9 bytes · "TEST_NAME"');
-    assert.equal(labels.ACCOUNT_MATCHES, 'Matches · ID/reference 0 · Exact name 1');
-    assert.equal(labels.SLOT_1_ID, 'E333 slot 1 · 7 bytes · "USER001"');
-    assert.equal(labels.SLOT_1_NAME, 'E333 slot 1 name · 4 bytes · "Zo\\u00EB"');
-    assert.equal(labels.SLOT_1_NAME_HEX, 'E333 slot 1 name HEX · 4 bytes · 5A 6F C3 AB');
-    assert.equal(labels.SLOT_2_ID, 'E333 slot 2 · 7 bytes · "NEW0002"');
-    assert.equal(labels.SLOT_3_ID, 'E333 slot 3 · Empty');
-    assert.equal(labels.GUEST_ACCOUNT_ID, 'E333 guest · 7 bytes · "GUEST00"');
+    await navigate('ACCOUNT_SYSTEM_BACK', 'ACCOUNT_IDS');
+    assert.equal(labels.SYSTEM_ACCOUNT_ID, '');
+    assert.equal(labels.SESSION_REFERENCE, '');
+    await navigate('OPEN_SLOT_1', 'ACCOUNT_SLOT');
+    assert.equal(labels.SLOT_DETAIL_ID, 'E333 slot 1 · 7 bytes · "USER001"');
+    assert.equal(labels.SLOT_DETAIL_NAME, 'Name · 4 bytes · "Zo\\u00EB"');
+    assert.equal(labels.SLOT_DETAIL_HEX, 'Name HEX · 4 bytes · 5A 6F C3 AB');
+    await navigate('ACCOUNT_SLOT_BACK', 'ACCOUNT_IDS');
+    assert.equal(labels.SLOT_DETAIL_ID, '');
+    assert.equal(labels.SLOT_DETAIL_HEX, '');
+    await navigate('OPEN_SLOT_2', 'ACCOUNT_SLOT');
+    assert.equal(labels.SLOT_DETAIL_ID, 'E333 slot 2 · 7 bytes · "NEW0002"');
+    await navigate('ACCOUNT_SLOT_BACK', 'ACCOUNT_IDS');
+    await navigate('OPEN_SLOT_3', 'ACCOUNT_SLOT');
+    assert.equal(labels.SLOT_DETAIL_ID, 'E333 slot 3 · Empty');
+    await navigate('ACCOUNT_SLOT_BACK', 'ACCOUNT_IDS');
+    await navigate('OPEN_GUEST_ACCOUNT', 'ACCOUNT_SLOT');
+    assert.equal(labels.SLOT_DETAIL_ID, 'E333 guest · 7 bytes · "GUEST00"');
+    assert.equal(shown.SLOT_DETAIL_NAME, false);
+    assert.equal(shown.SLOT_DETAIL_HEX, false);
+    await navigate('ACCOUNT_SLOT_BACK', 'ACCOUNT_IDS');
     assert.deepEqual(signals.requests.slice(beforeOpeningIds), [ident, list]);
 
     diagnosticNameBytes = Buffer.from('TEST_NAME');
@@ -858,18 +947,28 @@ test('UI renders account details without Array.flatMap and still supports profil
     systemName = 'TEST_NAME\0';
     sessionChanged();
     await settle();
-    assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 10 bytes · "TEST_NAME\\u0000"');
     assert.equal(labels.ACCOUNT_MATCHES, 'Matches · ID/reference 0 · Exact name Unavailable');
+    await navigate('OPEN_SYSTEM_ACCOUNT', 'ACCOUNT_SYSTEM');
+    assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 10 bytes · "TEST_NAME\\u0000"');
+    await navigate('ACCOUNT_SYSTEM_BACK', 'ACCOUNT_IDS');
 
     systemName = undefined;
     diagnosticNameBytes = Buffer.from([0xc1, 0xcc, 0xc2]);
     sessionChanged();
     await settle();
     assert.equal(labels.ACCOUNT_MATCHES, 'Matches · Unavailable');
+    await navigate('OPEN_SYSTEM_ACCOUNT', 'ACCOUNT_SYSTEM');
     assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 9 bytes · "TEST_NAME"');
-    assert.equal(labels.SLOT_1_NAME, 'E333 slot 1 name · Invalid text encoding');
-    assert.equal(labels.SLOT_1_NAME_HEX, 'E333 slot 1 name HEX · 3 bytes · C1 CC C2');
-    assert.equal(labels.SLOT_2_NAME, 'E333 slot 2 name · 9 bytes · "TEST_NAME"');
+    await navigate('ACCOUNT_SYSTEM_BACK', 'ACCOUNT_IDS');
+    await navigate('OPEN_SLOT_1', 'ACCOUNT_SLOT');
+    assert.equal(labels.SLOT_DETAIL_NAME, 'Name · Invalid text encoding');
+    assert.equal(labels.SLOT_DETAIL_HEX, 'Name HEX · 3 bytes · C1 CC C2');
+    assert.equal(shown.SLOT_DETAIL_NAME, true);
+    assert.equal(shown.SLOT_DETAIL_HEX, true);
+    await navigate('ACCOUNT_SLOT_BACK', 'ACCOUNT_IDS');
+    await navigate('OPEN_SLOT_2', 'ACCOUNT_SLOT');
+    assert.equal(labels.SLOT_DETAIL_NAME, 'Name · 9 bytes · "TEST_NAME"');
+    await navigate('ACCOUNT_SLOT_BACK', 'ACCOUNT_IDS');
     assert.equal(enabled.RENAME, false);
 
     diagnosticNameBytes = undefined;
@@ -879,8 +978,8 @@ test('UI renders account details without Array.flatMap and still supports profil
     assert.equal(labels.SYSTEM_ACCOUNT_ID, '');
     assert.equal(labels.SESSION_REFERENCE, '');
     assert.equal(labels.SYSTEM_ACCOUNT_NAME, '');
-    assert.equal(labels.SLOT_2_ID, '');
-    assert.equal(labels.SLOT_1_NAME_HEX, '');
+    assert.equal(labels.SLOT_DETAIL_ID, '');
+    assert.equal(labels.SLOT_DETAIL_HEX, '');
     await clicks.DETAILS_BACK();
     await settle();
 
@@ -917,11 +1016,35 @@ test('UI renders account details without Array.flatMap and still supports profil
 
     enteringName = clicks.RENAME();
     await settle();
-    spellerNotify({ interactionParameters: new Map([[102, 'БМВ/'], [105, true]]) });
+    enter(null);
+    await settle();
+    assert.equal(speedPolling[speedPolling.length - 1], false);
+    const requestsWhileHidden = signals.requests.length;
+    await settle();
+    assert.equal(signals.requests.length, requestsWhileHidden);
+    enter('MAIN');
     await enteringName;
     await settle();
     assert.equal(screen, 'MAIN');
-    assert.equal(labels.STATUS, 'Use Latin (A–Z) or Russian letters, digits, spaces, - or _. Max 24 UTF-8 bytes.');
+    assert.equal(spellerNotify, null);
+    assert.equal(enabled.RENAME, true);
+    assert.equal(speedPolling[speedPolling.length - 1], true);
+
+    enteringName = clicks.RENAME();
+    await settle();
+    spellerNotify({ interactionParameters: new Map([[102, '\0\u202e '], [105, true]]) });
+    await enteringName;
+    await settle();
+    assert.equal(screen, 'MAIN');
+    assert.equal(labels.STATUS, 'Enter a profile name with visible characters.');
+
+    enteringName = clicks.RENAME();
+    await settle();
+    spellerNotify({ interactionParameters: new Map([[102, '字'.repeat(8) + 'A'], [105, true]]) });
+    await enteringName;
+    await settle();
+    assert.equal(screen, 'MAIN');
+    assert.equal(labels.STATUS, 'Name is too long. Maximum 24 UTF-8 bytes.');
 
     enteringName = clicks.RENAME();
     await settle();
@@ -941,16 +1064,18 @@ test('UI renders account details without Array.flatMap and still supports profil
 
     enteringName = clicks.RENAME();
     await settle();
-    spellerNotify({ interactionParameters: new Map([[102, 'БМВ'], [105, true]]) });
+    const internationalName = 'БМВ 日本語界 Zoë';
+    assert.equal(Buffer.byteLength(internationalName, 'utf8'), 24);
+    spellerNotify({ interactionParameters: new Map([[102, '\u202e' + internationalName + '\0'], [105, true]]) });
     await enteringName;
     assert.equal(screen, 'CONFIRM');
-    assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “A” to “БМВ”?');
+    assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “A” to “' + internationalName + '”?');
     assert.equal(userName, 'A');
     await clicks.APPLY();
     assert.equal(labels.CONFIRM_TEXT, 'New name confirmed.');
-    assert.equal(userName, 'БМВ');
+    assert.equal(userName, internationalName);
     assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [
-        loginRequest(added), loginRequest(added), renameRequest('A'), renameRequest('БМВ')
+        loginRequest(added), loginRequest(added), renameRequest('A'), renameRequest(internationalName)
     ]);
 
     await clicks.APPLY();

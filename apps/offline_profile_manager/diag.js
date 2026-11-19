@@ -1,26 +1,23 @@
 'use strict';
 
-const { DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity } = require('./profiles');
+const { DiagnosticError, malformed, prepareProfileName, decodeAccounts, decodeCreationResult, decodeIdentity } = require('./profiles');
 const ADDRESS = 0x63;
 const IDENT = [0x22, 0xf1, 0x50];
 const ACCOUNTS = [0x22, 0xe3, 0x33];
 const CREATE = [0x31, 0x01, 0xa1, 0x9a];
 const CREATION_RESULT = [0x31, 0x03, 0xa1, 0x9a];
-const NAME_MAX_BYTES = 24; // Application limit. The PRG does not specify an ECU maximum.
 
 function loginRequest(id) {
     if (typeof id !== 'string' || id.length !== 7 || /[^ -~]/.test(id)) throw new DiagnosticError('id');
     return [0x2e, 0xe3, 0x34].concat(Array.from(Buffer.from(id, 'ascii')));
 }
 
-function validName(name) {
-    return typeof name === 'string' && name.length > 0 && name.trim() === name &&
-        !/[^A-Za-zА-Яа-яЁё0-9 _-]/.test(name) && Buffer.byteLength(name, 'utf8') <= NAME_MAX_BYTES;
+function encodeRename(name) {
+    return [0x2e, 0xe3, 0x35].concat(Array.from(Buffer.from(name, 'utf8')), 0);
 }
 
-function renameRequest(name) {
-    if (!validName(name)) throw new DiagnosticError('name');
-    return [0x2e, 0xe3, 0x35].concat(Array.from(Buffer.from(name, 'utf8')), 0);
+function renameRequest(input) {
+    return encodeRename(prepareProfileName(input));
 }
 
 function piaRequest(slot, mode) {
@@ -108,7 +105,10 @@ class ProfileDiag {
     creationResult() { return this.request(CREATION_RESULT, null, decodeCreationResult); }
     create(permit) { return this.write(CREATE, permit); }
     login(id, permit) { return this.write(loginRequest(id), permit); }
-    rename(name, permit) { return this.write(renameRequest(name), permit); }
+    rename(input, permit) {
+        const name = prepareProfileName(input);
+        return this.write(encodeRename(name), permit).then(() => name);
+    }
     setPermanentPia(slot, permit) {
         if (!Number.isInteger(slot) || !PIA_PERMANENT[slot]) throw new DiagnosticError('argument');
         return this.write(PIA_PERMANENT[slot], permit);
@@ -119,4 +119,4 @@ class ProfileDiag {
     }
 }
 
-module.exports = { ProfileDiag, decodeReply, loginRequest, renameRequest, piaRequest, validName, NAME_MAX_BYTES };
+module.exports = { ProfileDiag, decodeReply, loginRequest, renameRequest, piaRequest };

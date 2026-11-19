@@ -1,6 +1,8 @@
 'use strict';
 
 const MAX_DRIVER_PROFILES = 3;
+const MAX_PROFILE_NAME_BYTES = 24; // App limit for the name alone, before the NUL terminator.
+const NAME_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200e-\u200f\u2028-\u202e\u2060\u2066-\u206f\ud800-\udfff\ufeff]/gu;
 
 class DiagnosticError extends Error {
     constructor(code, nrc) {
@@ -11,6 +13,15 @@ class DiagnosticError extends Error {
 }
 
 const malformed = (reason) => Object.assign(new DiagnosticError('payload'), { reason });
+
+function prepareProfileName(input) {
+    if (typeof input !== 'string') throw new DiagnosticError('name');
+    const name = input.replace(NAME_CONTROLS, '');
+    // Keep script and emoji joiners when the name contains other text.
+    if (!name.replace(/[\u200c\u200d]/g, '').trim()) throw new DiagnosticError('name');
+    if (Buffer.byteLength(name, 'utf8') > MAX_PROFILE_NAME_BYTES) throw new DiagnosticError('nameTooLong');
+    return name;
+}
 
 function text(bytes, encoding) {
     const value = Buffer.from(bytes).toString(encoding);
@@ -101,5 +112,6 @@ function matchCreatedProfile(before, after, reportedId) {
 }
 
 module.exports = {
-    DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity, matchCreatedProfile, MAX_DRIVER_PROFILES
+    DiagnosticError, malformed, prepareProfileName, decodeAccounts, decodeCreationResult, decodeIdentity,
+    matchCreatedProfile, MAX_DRIVER_PROFILES, MAX_PROFILE_NAME_BYTES
 };

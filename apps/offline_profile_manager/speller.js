@@ -6,7 +6,7 @@ const TEXT = 102;
 const ACCEPTED = 105;
 const FAILED = Symbol('speller failed');
 
-async function enterProfileName(app) {
+async function enterProfileName(app, cancellation) {
     let deadline, cancelled = false, proxy, subscription;
     let deliver;
     const outcome = new Promise((resolve) => { deliver = resolve; });
@@ -47,7 +47,7 @@ async function enterProfileName(app) {
         await proxy.start({ token: instance.token, startParameters: new Map([[TITLE, 'New profile name']]) });
     }
 
-    try {
+    async function readInput() {
         await Promise.race([open(), new Promise((resolve, reject) => {
             deadline = setTimeout(() => reject(new Error('Text input did not open')), 5000);
         })]);
@@ -55,6 +55,10 @@ async function enterProfileName(app) {
         const result = await outcome;
         if (result === FAILED) throw new Error('Text input failed');
         return result;
+    }
+
+    try {
+        return await Promise.race([readInput(), cancellation]);
     } finally {
         cancelled = true;
         clearTimeout(deadline);

@@ -82,6 +82,7 @@ class Vehicle {
         this.speed = null;
         this.gear = null;
         this.alternateGear = null;
+        this.parkingPolling = false;
         this.speedLink = null;
         this.gearLink = null;
         this.sessionLink = null;
@@ -97,8 +98,12 @@ class Vehicle {
                 this.speed = { value, at: this.now() };
             } }, silent, {
                 pollMs: 1000,
+                polling: false,
                 onAvailable: (up) => { if (!up) this.speed = null; }
-            }).then((link) => { this.speedLink = link; }),
+            }).then((link) => {
+                this.speedLink = link;
+                if (link.setPolling) link.setPolling(this.parkingPolling);
+            }),
             signals.watch(GEAR, '1', {
                 statusGearboxDrive: (value) => {
                     this.gear = { value: value && value.statusActualStageDrive, at: this.now() };
@@ -111,6 +116,13 @@ class Vehicle {
             }).then((link) => { this.gearLink = link; }),
             this.initSession()
         ]);
+    }
+
+    setParkingPolling(enabled) {
+        if (this.parkingPolling === enabled) return;
+        this.parkingPolling = enabled;
+        if (!enabled) this.speed = null;
+        if (this.speedLink && this.speedLink.setPolling) this.speedLink.setPolling(enabled);
     }
 
     async initSession() {

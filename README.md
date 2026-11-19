@@ -4,7 +4,7 @@ A shared MGU Store source for BMW iDrive 7 apps. Each app has its own ID, versio
 
 | App | ID | Status |
 | --- | --- | --- |
-| [Offline Profile Manager](apps/offline_profile_manager/) | `offline_profile_manager` | 0.1.13, BMW X5 G05 test configuration (`L18_22w18.3-1-6`, `mgu-high`) |
+| [Offline Profile Manager](apps/offline_profile_manager/) | `offline_profile_manager` | 0.1.17, BMW X5 G05 test configuration (`L18_22w18.3-1-6`, `mgu-high`) |
 | [Mirror Heat Check](apps/mirror_heat_check/) | `mirror_heat_check` | 0.1.3, four-minute G05 heater test, vehicle validation pending |
 
 ## Install through MGU Store

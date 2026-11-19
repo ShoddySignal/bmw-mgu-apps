@@ -1,7 +1,7 @@
 'use strict';
 
 const { DiagnosticError, matchCreatedProfile, MAX_DRIVER_PROFILES } = require('./profiles');
-const { loginRequest, validName } = require('./diag');
+const { loginRequest } = require('./diag');
 const ACTIVATION_CONFIRMATION_MS = 8000;
 const ACTIVATION_POLL_MS = 500;
 const CREATION_LIST_CONFIRMATION_MS = 8000;
@@ -283,17 +283,18 @@ class Workflow {
         });
     }
 
-    rename(id, name, expectedAccount = this.systemAccount) {
+    rename(id, input, expectedAccount = this.systemAccount) {
         return this.profileAction('rename', id, async (account, current) => {
-            if (!validName(name)) throw new DiagnosticError('name');
             const active = this.systemAccount;
             if (!this.active || this.active.id !== account.id || !sameSessionAccount(expectedAccount, active)) {
                 throw new DiagnosticError('active');
             }
-            this.profiles = null;
-            this.active = null;
-            this.systemAccount = null;
-            await this.diag.rename(name, () => this.permit(current, active));
+            const name = await this.diag.rename(input, () => {
+                this.permit(current, active);
+                this.profiles = null;
+                this.active = null;
+                this.systemAccount = null;
+            });
             current();
             this.stage('accepted');
             const after = await this.readProfiles(current);

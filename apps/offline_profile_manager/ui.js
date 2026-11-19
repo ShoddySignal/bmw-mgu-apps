@@ -1,18 +1,16 @@
 'use strict';
 
-const { ProfileDiag, validName, NAME_MAX_BYTES } = require('./diag');
-const { MAX_DRIVER_PROFILES } = require('./profiles');
+const { ProfileDiag } = require('./diag');
+const { DiagnosticError, prepareProfileName, MAX_DRIVER_PROFILES, MAX_PROFILE_NAME_BYTES } = require('./profiles');
 const { enterProfileName } = require('./speller');
 const { Workflow } = require('./workflow');
 const { Vehicle, monotonicMs } = require('./vehicle');
 
 const PROFILE_ROWS = ['PROFILE_0', 'PROFILE_1', 'PROFILE_2', 'PROFILE_3'];
-const ACCOUNT_ID_ROWS = [
-    ['SLOT_1_ID', 'E333 slot 1', 1],
-    ['SLOT_2_ID', 'E333 slot 2', 2],
-    ['SLOT_3_ID', 'E333 slot 3', 3],
-    ['GUEST_ACCOUNT_ID', 'E333 guest', null]
-];
+const ACCOUNT_DETAIL_SCREENS = ['ACCOUNT_SLOT', 'ACCOUNT_SYSTEM', 'ACCOUNT_IDS'];
+const ACCOUNT_SLOT_BUTTONS = ['OPEN_SLOT_1', 'OPEN_SLOT_2', 'OPEN_SLOT_3'];
+const PARKING_SCREENS = ['MAIN', 'DETAILS', 'CONFIRM'];
+const SPELLER_RETURN_GRACE_MS = 750;
 const HEX_PREVIEW_BYTES = 48;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const TYPES = { guest: 'Guest', local: 'Local', connected: 'BMW ID' };
@@ -33,7 +31,8 @@ const ERRORS = {
     slotChanged: 'The profile slot changed. Open Finish profile setup and confirm again.',
     piaPending: 'Choose Finish profile setup to continue.',
     id: 'The profile ID has an unexpected format for activation.',
-    name: 'Use Latin (A–Z) or Russian letters, digits, spaces, - or _. Max ' + NAME_MAX_BYTES + ' UTF-8 bytes.',
+    name: 'Enter a profile name with visible characters.',
+    nameTooLong: 'Name is too long. Maximum ' + MAX_PROFILE_NAME_BYTES + ' UTF-8 bytes.',
     renameMissing: 'ECU accepted the request. The new name is awaiting confirmation.'
 };
 const CONFIRMED = {
@@ -128,7 +127,8 @@ async function start(ctx, kit, sdk) {
     const inFront = (name) => ui.isVisible(name) && ui.hasFocus(name);
     let intent = null, renameNotice = null;
     let refreshPending = true, renderQueued = false, rendering = false;
-    let accountDetailsShown = false;
+    let accountDetailScreen, accountDetailFields = [], selectedSlot = null;
+    let confirmationText, confirmationWrite = Promise.resolve(), refreshParkedDisplay;
     const work = new Workflow(diag, vehicle, {
         visible: () => inFront('CONFIRM') && intent && intent.phase === 'running' && !intent.revoked,
         changed: schedule,
@@ -162,36 +162,83 @@ async function start(ctx, kit, sdk) {
         }
     }
 
-    function renderAccountDetails(systemAccount, profiles) {
-        const show = inFront('ACCOUNT_IDS');
-        if (!show && !accountDetailsShown) return;
-        accountDetailsShown = show;
-        const matches = work.accountMatches;
-        const rows = [
-            ['ACCOUNT_MATCHES', work.busy ? 'Reading profile details…' : matches ?
-                'Matches · ID/reference ' + matches.ids + ' · Exact name ' +
-                (matches.names === null ? 'Unavailable' : matches.names) : 'Matches · Unavailable'],
-            ['SYSTEM_ACCOUNT_ID', accountValue('UserAccount.id', systemAccount && systemAccount.id)],
-            ['SESSION_REFERENCE', accountValue('SessionManager reference', systemAccount && systemAccount.reference)],
-            ['SYSTEM_ACCOUNT_NAME', accountValue('UserAccount.name', systemAccount && systemAccount.rawName)]
-        ];
-        for (const [component, label, slot] of ACCOUNT_ID_ROWS) {
-            const profile = profiles && profiles.find((entry) => entry.slot === slot);
-            rows.push([component, accountValue(label, profile && profile.id, profiles ? 'Empty' : 'Unavailable')]);
-            if (slot === null) continue;
-            const field = work.accountNames[slot - 1];
-            const nameLabel = label + ' name';
-            rows.push(
-                ['SLOT_' + slot + '_NAME', accountValue(nameLabel, field && field.name, field && field.issue)],
-                ['SLOT_' + slot + '_NAME_HEX', nameHex(nameLabel + ' HEX', field)]
-            );
+    function setConfirmationText(text, force) {
+        if (force || text !== confirmationText) {
+            confirmationText = text;
+            confirmationWrite = confirmationWrite.catch(() => {}).then(() => ui.text('CONFIRM_TEXT', text));
         }
-        return Promise.all(rows.map(([component, value]) => ui.text(component, show ? value : '')));
+        return confirmationWrite;
+    }
+
+    function spellerVisibilityChanged() {
+        const choice = intent;
+        if (!choice || choice.phase !== 'speller') return;
+        if (!inFront('MAIN')) {
+            choice.leftMain = true;
+            clearTimeout(choice.returnTimer);
+            choice.returnTimer = null;
+        } else if (choice.leftMain && !choice.returnTimer) {
+            // MainApp can restore the screen before delivering the last keystroke event.
+            choice.returnTimer = setTimeout(choice.cancelInput, SPELLER_RETURN_GRACE_MS);
+        }
+    }
+
+    function accountRows(screen, systemAccount, profiles) {
+        if (screen === 'ACCOUNT_SYSTEM') {
+            return [
+                ['SYSTEM_ACCOUNT_NAME', accountValue('UserAccount.name', systemAccount && systemAccount.rawName)],
+                ['SYSTEM_ACCOUNT_ID', accountValue('UserAccount.id', systemAccount && systemAccount.id)],
+                ['SESSION_REFERENCE', accountValue('SessionManager reference', systemAccount && systemAccount.reference)]
+            ];
+        }
+        if (screen === 'ACCOUNT_SLOT') {
+            const profile = profiles && profiles.find((entry) => entry.slot === selectedSlot);
+            const label = selectedSlot === null ? 'E333 guest' : 'E333 slot ' + selectedSlot;
+            const rows = [['SLOT_DETAIL_ID', accountValue(label, profile && profile.id, profiles ? 'Empty' : 'Unavailable')]];
+            if (selectedSlot !== null) {
+                const field = work.accountNames[selectedSlot - 1];
+                rows.push(
+                    ['SLOT_DETAIL_NAME', accountValue('Name', field && field.name, field && field.issue)],
+                    ['SLOT_DETAIL_HEX', nameHex('Name HEX', field)]
+                );
+            }
+            return rows;
+        }
+        const matches = work.accountMatches;
+        const summary = work.busy ? 'Reading profile details…' : matches ?
+            'Matches · ID/reference ' + matches.ids + ' · Exact name ' +
+            (matches.names === null ? 'Unavailable' : matches.names) : 'Matches · Unavailable';
+        return [['ACCOUNT_MATCHES', summary]].concat(ACCOUNT_SLOT_BUTTONS.map((button, index) => {
+            const label = 'Slot ' + (index + 1);
+            const profile = profiles && profiles.find((entry) => entry.slot === index + 1);
+            const detail = profile ? profileLabel(profile.name) : profiles ? 'Empty' : '';
+            return [button, detail ? label + ' · ' + detail : label, label];
+        }));
+    }
+
+    function renderAccountDetails(systemAccount, profiles) {
+        const screen = ACCOUNT_DETAIL_SCREENS.find(inFront);
+        if (!screen && !accountDetailScreen) return;
+        const cleared = screen === accountDetailScreen ? [] :
+            accountDetailFields.map(([component, reset]) => ui.text(component, reset));
+        const rows = screen ? accountRows(screen, systemAccount, profiles) : [];
+        accountDetailScreen = screen;
+        accountDetailFields = rows.map(([component, , reset]) => [component, reset || '']);
+        return Promise.all(cleared.concat(rows.map(([component, value]) => ui.text(component, value))));
     }
 
     async function render() {
         renderQueued = false;
-        if (refreshPending && !work.busy && link.available && (inFront('MAIN') || inFront('ACCOUNT_IDS'))) {
+        vehicle.setParkingPolling(PARKING_SCREENS.some(inFront));
+        if (inFront('DETAILS') && !refreshParkedDisplay) {
+            refreshParkedDisplay = setInterval(schedule, 1000);
+            if (refreshParkedDisplay.unref) refreshParkedDisplay.unref();
+        } else if (!inFront('DETAILS') && refreshParkedDisplay) {
+            clearInterval(refreshParkedDisplay);
+            refreshParkedDisplay = null;
+        }
+        if (refreshPending && !work.busy && link.available &&
+            (inFront('MAIN') || ACCOUNT_DETAIL_SCREENS.some(inFront))) {
             refreshPending = false;
             work.refresh();
         }
@@ -230,6 +277,8 @@ async function start(ctx, kit, sdk) {
             ]).then(() => ui.visible(name, true));
         });
         try {
+            const confirmationStatus = inFront('CONFIRM') && intent && (intent.phase === 'running' || intent.phase === 'done') ?
+                setConfirmationText(message) : null;
             await Promise.all(rows.concat([
                 ui.text('STATUS', listMessage),
                 ui.text('PROFILE_CAPACITY', profileCapacity),
@@ -244,6 +293,7 @@ async function start(ctx, kit, sdk) {
                 ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
                 ui.text('NRC', diagnostic(work, message)),
                 renderAccountDetails(systemAccount, work.profiles),
+                confirmationStatus,
                 ui.enabled('APPLY', !work.busy && !!intent && (intent.phase === 'done' ||
                     (intent.phase === 'confirm' && !intent.revoked && !!can(intent.action, intent.id)))),
                 ui.visible('CANCEL_CONFIRM', !!intent && intent.phase === 'confirm'),
@@ -258,7 +308,7 @@ async function start(ctx, kit, sdk) {
     function confirm(choice, message) {
         const current = { ...choice, phase: 'confirm' };
         intent = current;
-        return ui.text('CONFIRM_TEXT', message).then(() => {
+        return setConfirmationText(message, true).then(() => {
             if (intent === current) return ui.open('CONFIRM');
         }).then(schedule);
     }
@@ -277,8 +327,26 @@ async function start(ctx, kit, sdk) {
     });
     ui.onClick('DIAGNOSTICS', () => { schedule(); return ui.open('DETAILS'); });
     ui.onClick('DETAILS_BACK', () => { if (inFront('DETAILS')) return ui.close('DETAILS'); });
-    ui.onClick('SHOW_ACCOUNT_IDS', () => { if (inFront('DETAILS')) return ui.open('ACCOUNT_IDS'); });
+    ui.onClick('SHOW_ACCOUNT_IDS', () => {
+        if (!inFront('DETAILS')) return;
+        refreshPending = true;
+        return ui.open('ACCOUNT_IDS');
+    });
     ui.onClick('ACCOUNT_IDS_BACK', () => { if (inFront('ACCOUNT_IDS')) return ui.close('ACCOUNT_IDS'); });
+    ui.onClick('OPEN_SYSTEM_ACCOUNT', () => { if (inFront('ACCOUNT_IDS')) return ui.open('ACCOUNT_SYSTEM'); });
+    ui.onClick('ACCOUNT_SYSTEM_BACK', () => { if (inFront('ACCOUNT_SYSTEM')) return ui.close('ACCOUNT_SYSTEM'); });
+    ui.onClick('ACCOUNT_SLOT_BACK', () => { if (inFront('ACCOUNT_SLOT')) return ui.close('ACCOUNT_SLOT'); });
+    async function openAccountSlot(slot) {
+        if (!inFront('ACCOUNT_IDS')) return;
+        selectedSlot = slot;
+        await Promise.all([
+            ui.visible('SLOT_DETAIL_NAME', slot !== null),
+            ui.visible('SLOT_DETAIL_HEX', slot !== null)
+        ]);
+        if (inFront('ACCOUNT_IDS') && selectedSlot === slot) return ui.open('ACCOUNT_SLOT');
+    }
+    ACCOUNT_SLOT_BUTTONS.forEach((button, index) => ui.onClick(button, () => openAccountSlot(index + 1)));
+    ui.onClick('OPEN_GUEST_ACCOUNT', () => openAccountSlot(null));
     ui.onClick('CANCEL_CONFIRM', () => {
         if (!inFront('CONFIRM') || !intent || intent.phase !== 'confirm') return;
         intent = null;
@@ -298,23 +366,26 @@ async function start(ctx, kit, sdk) {
         const profile = driverProfile(work.active && work.active.id);
         if (!inFront('MAIN') || !profile || !can('rename', profile.id)) return;
         const choice = { action: 'rename', id: profile.id, account: work.systemAccount, phase: 'speller' };
+        const cancellation = new Promise((resolve) => { choice.cancelInput = () => resolve(null); });
         intent = choice;
         renameNotice = null;
         schedule();
         try {
-            const value = await enterProfileName(ctx.app);
-            if (intent !== choice || choice.revoked || value === null) return;
+            const input = await enterProfileName(ctx.app, cancellation);
+            if (intent !== choice || choice.revoked || input === null) return;
             if (!vehicle.isCurrentAccount(choice.account)) {
                 renameNotice = ERRORS.active;
-            } else if (!validName(value)) {
-                renameNotice = ERRORS.name;
-            } else {
-                return confirm({ ...choice, value },
-                    'Rename active profile “' + profileLabel(profile.name) + '” to “' + value + '”?');
+                return;
             }
+            const value = prepareProfileName(input);
+            return confirm({ action: choice.action, id: choice.id, account: choice.account, value },
+                'Rename active profile “' + profileLabel(profile.name) + '” to “' + value + '”?');
         } catch (error) {
-            if (intent === choice && !choice.revoked) renameNotice = 'iDrive text input is unavailable.';
+            if (intent === choice && !choice.revoked) {
+                renameNotice = error instanceof DiagnosticError ? errorMessage(error) : 'iDrive text input is unavailable.';
+            }
         } finally {
+            clearTimeout(choice.returnTimer);
             if (intent === choice) intent = null;
             schedule();
         }
@@ -329,35 +400,29 @@ async function start(ctx, kit, sdk) {
         const choice = intent;
         if (choice.phase !== 'confirm' || choice.revoked || !can(choice.action, choice.id)) return;
         choice.phase = 'running';
-        const update = () => {
-            if (intent === choice && choice.phase === 'running') ui.text('CONFIRM_TEXT', status(work));
-        };
-        const progress = setInterval(update, 350);
         try {
             await work[choice.action](choice.id, choice.value, choice.account);
         } finally {
-            clearInterval(progress);
             if (intent === choice) {
                 choice.phase = 'done';
-                await ui.text('CONFIRM_TEXT', status(work));
+                await setConfirmationText(status(work));
             }
             schedule();
         }
     });
     ui.onVisible((name, on) => {
-        if (on && (name === 'MAIN' || name === 'ACCOUNT_IDS')) refreshPending = true;
-        if (on || name === 'ACCOUNT_IDS') schedule();
+        if (on && name === 'MAIN') refreshPending = true;
+        if (name === 'MAIN') spellerVisibilityChanged();
+        if (on || PARKING_SCREENS.includes(name) || ACCOUNT_DETAIL_SCREENS.includes(name)) schedule();
         if (!on && name === 'CONFIRM' && intent && intent.phase === 'running') intent.revoked = true;
         if (!on && name === 'CONFIRM' && intent && (intent.phase === 'confirm' || intent.phase === 'done')) {
             intent = null;
         }
     });
     ui.onFocus((name, on) => {
-        if (name === 'ACCOUNT_IDS') schedule();
-        if (name === 'MAIN' && on) {
-            refreshPending = true;
-            schedule();
-        }
+        if (name === 'MAIN' && on) refreshPending = true;
+        if (name === 'MAIN') spellerVisibilityChanged();
+        if (PARKING_SCREENS.includes(name) || ACCOUNT_DETAIL_SCREENS.includes(name)) schedule();
         if (name === 'CONFIRM' && !on && intent && intent.phase === 'running') intent.revoked = true;
     });
     link.on('available', (up) => {
@@ -367,18 +432,13 @@ async function start(ctx, kit, sdk) {
                 intent.revoked = true;
                 if (intent.phase === 'confirm') {
                     intent.phase = 'done';
-                    ui.text('CONFIRM_TEXT', status(work));
                 }
+                if (intent.phase === 'speller') intent.cancelInput();
             }
         }
         refreshPending = true;
         schedule();
     });
-    const refreshParkedDisplay = setInterval(() => {
-        if (inFront('DETAILS')) schedule();
-    }, 1000);
-    if (refreshParkedDisplay.unref) refreshParkedDisplay.unref();
-
     schedule();
     const version = Promise.resolve().then(() => sdk.runtimeVariant.getSoftwareVersion()).then((value) => {
         if (value && [value.version, value.variantId].every((x) => typeof x === 'string' && /^[\w. -]{1,80}$/.test(x))) software = value;
