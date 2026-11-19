@@ -5,6 +5,12 @@ const { Workflow } = require('./workflow');
 const { Vehicle, monotonicMs } = require('./vehicle');
 
 const PROFILE_ROWS = ['PROFILE_0', 'PROFILE_1', 'PROFILE_2', 'PROFILE_3'];
+const ACCOUNT_ID_ROWS = [
+    ['SLOT_1_ID', 'E333 slot 1', 1],
+    ['SLOT_2_ID', 'E333 slot 2', 2],
+    ['SLOT_3_ID', 'E333 slot 3', 3],
+    ['GUEST_ACCOUNT_ID', 'E333 guest', null]
+];
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const TYPES = { guest: 'Guest', local: 'Local', connected: 'BMW ID' };
 const ERRORS = {
@@ -36,6 +42,13 @@ const OPERATIONS = { refresh: 'Read profiles', create: 'Create profile', pia: 'P
 
 function profileLabel(name) {
     return Array.from(name || 'Unnamed').slice(0, 38).join('');
+}
+
+function accountValue(label, value, missing = 'Unavailable') {
+    if (typeof value !== 'string') return label + ' · ' + missing;
+    const quoted = JSON.stringify(value).replace(/ /g, '\\x20').replace(/[\u007f-\uffff]/g,
+        (character) => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase());
+    return label + ' · ' + Buffer.byteLength(value, 'utf8') + ' bytes · ' + quoted;
 }
 
 function errorMessage(error) {
@@ -103,6 +116,7 @@ async function start(ctx, kit, sdk) {
     const inFront = (name) => ui.isVisible(name) && ui.hasFocus(name);
     let intent = null, draft = '', key = 0;
     let refreshPending = true, renderQueued = false, rendering = false;
+    let accountIdsShown = false;
     const keys = ctx.spec.screens.find((s) => s.name === 'EDIT').items.find((i) => i[1] === 'CHARACTER')[3];
     const work = new Workflow(diag, vehicle, {
         visible: () => inFront('CONFIRM') && intent && intent.phase === 'running' && !intent.revoked,
@@ -136,9 +150,25 @@ async function start(ctx, kit, sdk) {
         }
     }
 
+    function renderAccountIds(systemAccount, profiles) {
+        const show = inFront('ACCOUNT_IDS');
+        if (!show && !accountIdsShown) return;
+        accountIdsShown = show;
+        const rows = [
+            ['SYSTEM_ACCOUNT_ID', 'UserAccount.id', systemAccount && systemAccount.id],
+            ['SESSION_REFERENCE', 'SessionManager reference', systemAccount && systemAccount.reference],
+            ...ACCOUNT_ID_ROWS.map(([component, label, slot]) => {
+                const profile = profiles && profiles.find((entry) => entry.slot === slot);
+                return [component, label, profile && profile.id, profiles ? 'Empty' : 'Unavailable'];
+            })
+        ];
+        return Promise.all(rows.map(([component, label, value, missing]) =>
+            ui.text(component, show ? accountValue(label, value, missing) : '')));
+    }
+
     async function render() {
         renderQueued = false;
-        if (refreshPending && !work.busy && link.available && inFront('MAIN')) {
+        if (refreshPending && !work.busy && link.available && (inFront('MAIN') || inFront('ACCOUNT_IDS'))) {
             refreshPending = false;
             work.refresh();
         }
@@ -185,6 +215,7 @@ async function start(ctx, kit, sdk) {
                     (work.active.matchedByName ? 'Matched by name' : 'Verified') : activeIssue)),
                 ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
                 ui.text('NRC', diagnostic(work, message)),
+                renderAccountIds(systemAccount, work.profiles),
                 ui.text('DRAFT', 'New name · ' + (draft || '—')),
                 ui.enabled('RENAME_NEXT', !!intent && !intent.revoked && validName(draft) && !!can('rename', intent.id)),
                 ui.enabled('APPLY', !work.busy && !!intent && (intent.phase === 'done' ||
@@ -226,6 +257,8 @@ async function start(ctx, kit, sdk) {
     });
     ui.onClick('DIAGNOSTICS', () => { schedule(); return ui.open('DETAILS'); });
     ui.onClick('DETAILS_BACK', () => { if (inFront('DETAILS')) return ui.close('DETAILS'); });
+    ui.onClick('SHOW_ACCOUNT_IDS', () => { if (inFront('DETAILS')) return ui.open('ACCOUNT_IDS'); });
+    ui.onClick('ACCOUNT_IDS_BACK', () => { if (inFront('ACCOUNT_IDS')) return ui.close('ACCOUNT_IDS'); });
     ui.onClick('CANCEL_CONFIRM', () => cancel('CONFIRM', 'confirm'));
     ui.onClick('CANCEL_EDIT', () => cancel('EDIT', 'edit'));
     ui.onClick('CREATE', () => {
@@ -292,8 +325,8 @@ async function start(ctx, kit, sdk) {
         }
     });
     ui.onVisible((name, on) => {
-        if (on && name === 'MAIN') refreshPending = true;
-        if (on) schedule();
+        if (on && (name === 'MAIN' || name === 'ACCOUNT_IDS')) refreshPending = true;
+        if (on || name === 'ACCOUNT_IDS') schedule();
         if (!on && name === 'CONFIRM' && intent && intent.phase === 'running') intent.revoked = true;
         if (!on && intent &&
             ((name === 'EDIT' && intent.phase === 'edit') ||
@@ -303,6 +336,7 @@ async function start(ctx, kit, sdk) {
         }
     });
     ui.onFocus((name, on) => {
+        if (name === 'ACCOUNT_IDS') schedule();
         if (name === 'MAIN' && on) {
             refreshPending = true;
             schedule();

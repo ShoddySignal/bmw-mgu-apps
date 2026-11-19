@@ -605,9 +605,10 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
 test('UI follows the active account, retains a failure and can discard a draft name', async () => {
     const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
     let activeId = user, userName = 'Zoë', denyActivation = true, sessionChanged;
+    let reference = 'current';
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {
-            if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => 'current' };
+            if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => reference };
             if (iface.endsWith('UserAccount')) {
                 return { isAvailable: () => true, getValue: async (key) => ({
                     id: activeId, type: 'LOCAL', name: activeId === user ? userName : 'TEST_NAME'
@@ -664,7 +665,7 @@ test('UI follows the active account, retains a failure and can discard a draft n
         cells: async (name, row, fields) => { labels[name] = fields.Text1stRow; },
         visible: async () => {}, selected: async () => {},
         enabled: async (name, value) => { enabled[name] = value; },
-        open: async (name) => enter(name), close: async () => enter('MAIN')
+        open: async (name) => enter(name), close: async (name) => enter(name === 'ACCOUNT_IDS' ? 'DETAILS' : 'MAIN')
     };
     const settings = {
         get: (key) => values[key],
@@ -700,15 +701,39 @@ test('UI follows the active account, retains a failure and can discard a draft n
     assert.equal(labels.PROFILE_0, 'Zoë');
     assert.equal(labels.PROFILE_1, 'Active · TEST_NAME');
 
-    activeId = 'UNKNOWN';
+    activeId = 'UNKNOWN ';
+    reference = 'Account Ω';
     sessionChanged();
     await settle();
     assert.equal(labels.ACTIVE, 'Active account · Matched by name');
     assert.equal(labels.PROFILE_1, 'Active · TEST_NAME');
     assert.equal(enabled.PROFILE_1, false);
     assert.equal(enabled.RENAME, true);
+    await clicks.DIAGNOSTICS();
+    await settle();
+    assert.equal(labels.SYSTEM_ACCOUNT_ID, undefined);
+    const beforeOpeningIds = signals.requests.length;
+    await clicks.SHOW_ACCOUNT_IDS();
+    await settle();
+    assert.equal(screen, 'ACCOUNT_IDS');
+    assert.equal(labels.SYSTEM_ACCOUNT_ID, 'UserAccount.id · 8 bytes · "UNKNOWN\\x20"');
+    assert.equal(labels.SESSION_REFERENCE, 'SessionManager reference · 10 bytes · "Account\\x20\\u03A9"');
+    assert.equal(labels.SLOT_1_ID, 'E333 slot 1 · 7 bytes · "USER001"');
+    assert.equal(labels.SLOT_2_ID, 'E333 slot 2 · 7 bytes · "NEW0002"');
+    assert.equal(labels.SLOT_3_ID, 'E333 slot 3 · Empty');
+    assert.equal(labels.GUEST_ACCOUNT_ID, 'E333 guest · 7 bytes · "GUEST00"');
+    assert.deepEqual(signals.requests.slice(beforeOpeningIds), [ident, list]);
+    await clicks.ACCOUNT_IDS_BACK();
+    await settle();
+    assert.equal(screen, 'DETAILS');
+    assert.equal(labels.SYSTEM_ACCOUNT_ID, '');
+    assert.equal(labels.SESSION_REFERENCE, '');
+    assert.equal(labels.SLOT_2_ID, '');
+    await clicks.DETAILS_BACK();
+    await settle();
 
     activeId = user; // The driver switched profiles in the stock UI.
+    reference = 'current';
     sessionChanged();
     await settle();
     assert.equal(labels.PROFILE_0, 'Active · Zoë');
