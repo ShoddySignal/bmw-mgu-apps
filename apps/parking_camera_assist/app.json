@@ -1,0 +1,429 @@
+{
+  "id": "parking_camera_assist",
+  "title": "Parking Camera Assist",
+  "description": "Test parking camera activation in iDrive 7 and record Panorama, 360, 3D and video service diagnostics.",
+  "version": "0.1.0",
+  "vendor": "ShoddySignal",
+  "loggingId": "PKCA",
+  "mguHmi": [
+    "ID7"
+  ],
+  "license": "MIT",
+  "signals": {
+    "de.bmw.dass.parking.parkmenu.userinteraction.UserInteractionParkmenu": {
+      "selectedCameraMode": "rs",
+      "selectedCamera": "rs",
+      "automaticCameraSelected": "rs",
+      "operabilitySelectionBar": "rs",
+      "_methods": [
+        "hmiSelectCameraMode",
+        "hmiSelectCamera",
+        "hmiSelectAutomaticCamera",
+        "assistSelectCameraMode",
+        "assistSelectCamera"
+      ],
+      "_optional": "View selection"
+    },
+    "de.bmw.dass.parking.parkmenu.parkmenuandlayout.ParkmenuAndLayout": {
+      "requestParkmenu": "s",
+      "_optional": "Parking layout notifications"
+    },
+    "de.bmw.dass.parking.ParkmenuInstrumentCluster": {
+      "parkmenuRequest": "rs",
+      "_methods": [
+        "parkmenuRequestedByUser"
+      ],
+      "_optional": "Native menu request"
+    },
+    "de.bmw.dass.parking.ParkmenuTextForDisplayCid": {
+      "displayPopUp": "rs",
+      "_optional": "Parking status messages"
+    },
+    "de.bmw.dass.XView3D": {
+      "CurrentState": "rs",
+      "PosAngleFreecamera": "rs",
+      "_methods": [
+        "changePerspective"
+      ],
+      "_broadcasts": [
+        "PerspectiveChangeTriggered"
+      ],
+      "_optional": "XView3D perspective"
+    },
+    "de.bmw.infotainment.video.cameraproxy.ICAM2Proxy": {
+      "currentState": "rs",
+      "cameraProxyState": "rs",
+      "_methods": [
+        "clientAttach",
+        "changeState",
+        "clientDetach"
+      ],
+      "_optional": "ICAM2 perspective"
+    },
+    "de.bmw.infotainment.video.cameraplayer.CameraPlayer": {
+      "cameraPlayerState": "rs",
+      "_methods": [
+        "startVideo",
+        "stopVideo"
+      ],
+      "_optional": "Base camera player"
+    },
+    "de.bmw.infotainment.video.cameraplayer.ParkCameraPlayer": {
+      "cameraPlayerState": "rs",
+      "watchdogState": "rs",
+      "_methods": [
+        "startVideo",
+        "startProtectedVideo",
+        "stopVideo"
+      ],
+      "_optional": "Parking camera player"
+    },
+    "de.bmw.infotainment.video.dasvideo.DasVideo": {
+      "dasVideoState": "rs",
+      "watchdogState": "rs",
+      "_methods": [
+        "startVideo",
+        "stopVideo"
+      ],
+      "_optional": "DAS video player"
+    },
+    "de.bmw.infotainment.video.videodisplaystatus.VideoDisplayStatus": {
+      "videoDisplayStatus": "rs",
+      "_optional": "Video display confirmation"
+    },
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "statusCarSpeed2": "rs",
+      "_optional": "Vehicle speed check"
+    },
+    "de.bmw.infrastructure.VehicleInformation": {
+      "statusGearboxDrive": "s",
+      "DataPowerTrain2": "s",
+      "_optional": "Selector check"
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "title": "Parking Camera Assist",
+      "kind": "menu",
+      "items": [
+        [
+          "text",
+          "PARKING",
+          "Waiting for vehicle signals"
+        ],
+        [
+          "text3",
+          "STATUS",
+          "Select a request or record factory camera changes."
+        ],
+        [
+          "button",
+          "GO_MODES",
+          "Screen modes"
+        ],
+        [
+          "button",
+          "GO_CAMERAS",
+          "Cameras and 3D presets"
+        ],
+        [
+          "button",
+          "GO_ROUTES",
+          "Open menu and video players"
+        ],
+        [
+          "button",
+          "GO_RAW",
+          "XView3D and ICAM2"
+        ],
+        [
+          "button",
+          "TRACE",
+          "Record factory controls for 90 s"
+        ],
+        [
+          "button",
+          "GO_STATE",
+          "Live diagnostics"
+        ]
+      ]
+    },
+    {
+      "name": "MODES",
+      "title": "Parking screen modes",
+      "kind": "menu",
+      "items": [
+        [
+          "dropdown",
+          "MODE_PICK",
+          "Mode",
+          [
+            "Parking / 360",
+            "Panorama View",
+            "3D View",
+            "Rear view only",
+            "Trailer hitch",
+            "Car wash",
+            "Assist View",
+            "MPIL",
+            "Parking sensors only"
+          ]
+        ],
+        [
+          "button",
+          "HMI_MODE",
+          "Select through HMI"
+        ],
+        [
+          "button",
+          "ASSIST_MODE",
+          "Select through Assist without GPS"
+        ],
+        [
+          "button",
+          "MENU_MODE",
+          "Request parking menu, then select"
+        ]
+      ]
+    },
+    {
+      "name": "CAMERAS",
+      "title": "Cameras and 3D presets",
+      "kind": "menu",
+      "items": [
+        [
+          "dropdown",
+          "CAMERA_PICK",
+          "Camera",
+          [
+            "Front camera",
+            "Rear camera",
+            "Left camera",
+            "Right camera",
+            "Panorama camera",
+            "Automatic camera",
+            "Semi-automatic camera",
+            "3D preset 1",
+            "3D preset 2",
+            "3D preset 3",
+            "3D preset 4",
+            "3D preset 5",
+            "3D preset 6",
+            "3D preset 7",
+            "3D preset 8",
+            "No camera"
+          ]
+        ],
+        [
+          "button",
+          "HMI_CAMERA",
+          "Select through HMI"
+        ],
+        [
+          "button",
+          "ASSIST_CAMERA",
+          "Select through Assist without GPS"
+        ],
+        [
+          "button",
+          "ENTER_FREE",
+          "Enter 3D, then select preset"
+        ]
+      ]
+    },
+    {
+      "name": "ROUTES",
+      "title": "Parking menu and video",
+      "kind": "menu",
+      "items": [
+        [
+          "button",
+          "OPEN_MENU",
+          "Request native parking menu"
+        ],
+        [
+          "button",
+          "AUTO_CAMERA",
+          "Select automatic camera"
+        ],
+        [
+          "button",
+          "VIDEO_PARK",
+          "ParkCameraPlayer / startVideo"
+        ],
+        [
+          "button",
+          "VIDEO_PROTECTED",
+          "ParkCameraPlayer / startProtectedVideo"
+        ],
+        [
+          "button",
+          "VIDEO_BASE",
+          "CameraPlayer / startVideo"
+        ],
+        [
+          "button",
+          "VIDEO_DAS",
+          "DasVideo / startVideo"
+        ]
+      ]
+    },
+    {
+      "name": "RAW",
+      "title": "XView3D and ICAM2",
+      "kind": "menu",
+      "items": [
+        [
+          "dropdown",
+          "RAW_PICK",
+          "View preset",
+          [
+            "360 automatic",
+            "Bird’s-eye view",
+            "Fixed 360",
+            "Free 3D view",
+            "Front Panorama",
+            "Rear Panorama",
+            "Rear camera",
+            "Rear side view",
+            "Trailer zoom / 360",
+            "Trailer zoom / rear",
+            "Car wash"
+          ]
+        ],
+        [
+          "text",
+          "RAW_INDEX",
+          "Perspective byte: 0"
+        ],
+        [
+          "button",
+          "RAW_MINUS",
+          "Perspective -1"
+        ],
+        [
+          "button",
+          "RAW_PLUS",
+          "Perspective +1"
+        ],
+        [
+          "button",
+          "RAW_OBSERVED",
+          "Use observed perspective"
+        ],
+        [
+          "dropdown",
+          "CLIENT_PICK",
+          "ICAM2 client",
+          [
+            "Indirect client",
+            "Direct client"
+          ]
+        ],
+        [
+          "button",
+          "RAW_XVIEW",
+          "Try XView3D"
+        ],
+        [
+          "button",
+          "RAW_ICAM",
+          "Try ICAM2"
+        ]
+      ]
+    },
+    {
+      "name": "REVIEW",
+      "title": "Confirm camera request",
+      "kind": "menu",
+      "items": [
+        [
+          "text",
+          "REVIEW_NAME",
+          "Selected request"
+        ],
+        [
+          "text3",
+          "REVIEW_REQUEST",
+          "Select a request first."
+        ],
+        [
+          "text",
+          "REVIEW_PARK",
+          "Waiting for vehicle signals"
+        ],
+        [
+          "button",
+          "RUN_NAMES",
+          "Send with enum names"
+        ],
+        [
+          "button",
+          "RUN_NUMBERS",
+          "Send with enum numbers"
+        ]
+      ]
+    },
+    {
+      "name": "DIAGNOSTICS",
+      "title": "Live camera diagnostics",
+      "kind": "menu",
+      "items": [
+        [
+          "text",
+          "HMI_STATE",
+          "Mode / camera: waiting"
+        ],
+        [
+          "text",
+          "MENU_STATE",
+          "Layout / visibility: waiting"
+        ],
+        [
+          "text",
+          "FREE_STATE",
+          "3D available / angle: waiting"
+        ],
+        [
+          "text",
+          "XVIEW_STATE",
+          "XView3D state: waiting"
+        ],
+        [
+          "text",
+          "ICAM_STATE",
+          "ICAM2 state: waiting"
+        ],
+        [
+          "text",
+          "PLAYER_STATE",
+          "Park player / base: waiting"
+        ],
+        [
+          "text",
+          "DAS_STATE",
+          "DAS video / watchdog: waiting"
+        ],
+        [
+          "text",
+          "DISPLAY_STATE",
+          "Display / watchdog: waiting"
+        ],
+        [
+          "text",
+          "POPUP_STATE",
+          "Parking pop-up: waiting"
+        ],
+        [
+          "text3",
+          "LAST_RESULT",
+          "Last result: waiting"
+        ]
+      ]
+    }
+  ],
+  "config": {
+    "fullScreenRequired": false
+  }
+}

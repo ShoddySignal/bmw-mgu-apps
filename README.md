@@ -6,6 +6,7 @@ A shared MGU Store source for BMW iDrive 7 apps. Each app has its own ID, versio
 | --- | --- | --- |
 | [Offline Profile Manager](apps/offline_profile_manager/) | `offline_profile_manager` | 0.1.17, BMW X5 G05 test configuration (`L18_22w18.3-1-6`, `mgu-high`) |
 | [Mirror Heat Check](apps/mirror_heat_check/) | `mirror_heat_check` | 0.1.3, four-minute G05 heater test, vehicle validation pending |
+| [Parking Camera Assist](apps/parking_camera_assist/) | `parking_camera_assist` | 0.1.0, local USB package for ID7 camera requests and diagnostics, vehicle validation pending |
 
 ## Install through MGU Store
 
@@ -14,7 +15,7 @@ A shared MGU Store source for BMW iDrive 7 apps. Each app has its own ID, versio
 3. Go back to **Settings**, select **Check now**, and wait for the app list to refresh.
 4. Open **Store**, choose **Offline Profile Manager** or **Mirror Heat Check**, then select **Install**. When installation finishes, open the app from the iDrive app menu.
 
-The repository is public and can be added without signing in to GitHub. Add the source once for both apps. MGU Store installs the latest published version of each app. [Published versions on GitHub](https://github.com/ShoddySignal/bmw-mgu-apps/releases)
+The repository is public and can be added without signing in to GitHub. Add the source once for all published apps. MGU Store installs the latest published version of each app. [Published versions on GitHub](https://github.com/ShoddySignal/bmw-mgu-apps/releases)
 
 To update an installed app later, select **Check now** and use **Installed → Update**. [MGU Store documentation](https://github.com/robertnisipeanu/mgu-store#sources)
 
