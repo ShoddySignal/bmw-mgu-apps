@@ -90,17 +90,14 @@ class ProfileDiag {
             const result = decodeReply(bytes, uds);
             if (result.pending) throw new DiagnosticError('timeout'); // Kit normally consumes NRC 78.
             return decode ? decode(result.payload) : result.payload;
-        } catch (error) {
-            if (error instanceof DiagnosticError) {
-                if (error.code === 'payload' && Number.isInteger(replyLength)) {
-                    // Keep only the service and DID or routine ID. Arguments may contain account data.
-                    error.request = bytes.slice(0, headerLength).map((b) => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
-                    error.replyLength = replyLength;
-                }
-                throw error;
-            }
-            if (/timeout|timed out|ETIMEDOUT/i.test(String(error))) throw new DiagnosticError('timeout');
-            throw new DiagnosticError('transport');
+        } catch (cause) {
+            const error = cause instanceof DiagnosticError ? cause :
+                new DiagnosticError(/timeout|timed out|ETIMEDOUT/i.test(String(cause)) ? 'timeout' : 'transport');
+            // Keep only the fixed request header. Arguments may contain account data.
+            const length = PIA_PERMANENT.includes(bytes) ? headerLength + 1 : headerLength;
+            error.request = bytes.slice(0, length).map((b) => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
+            if (Number.isInteger(replyLength)) error.replyLength = replyLength;
+            throw error;
         } finally {
             this.busy = false;
         }

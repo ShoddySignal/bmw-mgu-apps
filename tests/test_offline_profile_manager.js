@@ -6,9 +6,11 @@ const kit = require('../kit/runtime/diag');
 const { ProfileDiag, decodeReply, loginRequest, renameRequest, piaRequest } = require('../apps/offline_profile_manager/diag');
 const { decodeAccounts, decodeCreationResult, decodeIdentity } = require('../apps/offline_profile_manager/profiles');
 const { Workflow } = require('../apps/offline_profile_manager/workflow');
-const { Vehicle, stopped } = require('../apps/offline_profile_manager/vehicle');
+const { Vehicle, parkingIssue } = require('../apps/offline_profile_manager/vehicle');
 const { start } = require('../apps/offline_profile_manager/ui');
 const spec = require('../apps/offline_profile_manager/app.json');
+const approvedBuilds = require('../apps/offline_profile_manager/verified-firmware');
+const software = { version: 'L18_22w18.3-1-6', variantId: 'mgu-high' };
 
 const ident = [0x22, 0xf1, 0x50];
 const list = [0x22, 0xe3, 0x33];
@@ -75,7 +77,8 @@ async function harness(exchange, overrides = {}) {
     const diag = new ProfileDiag(transport, kit.replyTo);
     const state = { speedKnown: true, parked: true, enabled: true, active: user, visible: true };
     const vehicle = {
-        stationary: () => state.speedKnown && state.parked,
+        parkingIssue: () => !state.speedKnown ? 'Speed sample missing or stale' :
+            state.parked ? null : 'A selector signal reports a position other than P',
         activeAccount: async () => state.active ? { id: state.active } : null,
         stillActive: (x) => x.id === state.active
     };
@@ -223,10 +226,10 @@ test('Activation requires an independent exact active-account match before renam
     ]);
 });
 
-test('Creates a profile, sets its PIA slot, and renames it after selection in iDrive', async () => {
+test('The approved build creates a profile, sets PIA, and renames it with extended account replies', async () => {
     let accounts = empty;
     const h = await harness((bytes) => {
-        if (bytes[0] === 0x22) return listReply(accounts);
+        if (bytes[0] === 0x22) return listReply(accounts.concat(0xa5, 0x5a));
         if (bytes[2] === 0xa1) {
             if (bytes[1] === 1) return [0x71, 1, 0xa1, 0x9a];
             accounts = full;
@@ -238,7 +241,7 @@ test('Creates a profile, sets its PIA slot, and renames it after selection in iD
         }
         accounts = Array.from(Buffer.from([user, 'Zoë', added, 'Driver 2', '', '', guest].join('\0') + '\0'));
         return [0x6e, 0xe3, 0x35];
-    }, { actions: ['create', 'pia', 'rename'] });
+    }, { options: { verified: approvedBuilds, firmware: () => software } });
     assert.equal(await h.workflow.refresh(), true);
     assert.equal(await h.workflow.create(), true);
     assert.equal(h.workflow.detail.id, added);
@@ -254,6 +257,18 @@ test('Creates a profile, sets its PIA slot, and renames it after selection in iD
     assert.deepEqual(h.signal.requests.filter((b) => b[0] !== 0x22), [
         create, result, permanent, renameRequest('Driver 2')
     ]);
+});
+
+test('Adjacent production builds and software variants remain read-only', async () => {
+    for (const variant of [{ ...software, version: 'L18_22w18.3-1-7' }, { ...software, variantId: 'mgu-low' }]) {
+        const h = await harness(() => listReply(full.concat(0xa5)), {
+            options: { verified: approvedBuilds, firmware: () => variant }
+        });
+        assert.equal(await h.workflow.refresh(), true);
+        assert.equal(await h.workflow.login(added), false);
+        assert.equal(h.workflow.detail.code, 'firmware');
+        assert.deepEqual(h.signal.requests, [ident, list]);
+    }
 });
 
 test('PIA requires its own firmware approval, an unchanged driver slot and Park at dispatch', async () => {
@@ -291,6 +306,7 @@ test('A failed PIA step preserves the new profile and resumes after restart with
     await h.workflow.refresh();
     assert.equal(await h.workflow.create(), false);
     assert.equal(h.workflow.detail.code, 'nrc');
+    assert.equal(h.workflow.detail.request, '31 01 02 08 04');
     assert.equal(savedId, added);
     assert.equal(await h.workflow.create(), false);
     assert.equal(h.workflow.detail.code, 'piaPending');
@@ -326,18 +342,36 @@ test('Errors, transport busy and timeout never repeat a write or advance to RRR'
         await h.workflow.refresh();
         assert.equal(await h.workflow.create(), false);
         assert.equal(h.workflow.detail.code, code);
+        assert.equal(h.workflow.detail.request, '31 01 A1 9A');
         assert.deepEqual(h.signal.requests, [ident, list, list, create]);
+    }
+});
+
+test('Failures identify result polling, PIA, activation and rename without recording arguments', async () => {
+    const cases = [
+        [(diag) => diag.creationResult(), '31 03 A1 9A', 0x31],
+        [(diag) => diag.setPermanentPia(0, () => {}), '31 01 02 08 04', 0x31],
+        [(diag) => diag.login(added, () => {}), '2E E3 34', 0x2e],
+        [(diag) => diag.rename('Private Name', () => {}), '2E E3 35', 0x2e]
+    ];
+    for (const [send, request, service] of cases) {
+        const h = await harness(() => [0x7f, service, 0x22]);
+        await assert.rejects(send(h.diag), { code: 'nrc', nrc: 0x22, request, replyLength: 3 });
     }
 });
 
 test('Motion, unknown speed, stale samples, unknown firmware and disabled writes block dispatch', async () => {
     const zero = { value: { speedVehicleCentreOfGravity: 0 }, at: 100 };
     const gear = { value: 'P', at: 100 };
-    assert.equal(stopped(zero, gear, 200), true);
-    assert.equal(stopped(zero, gear, 3101), false);
-    assert.equal(stopped(null, gear, 100), false);
-    assert.equal(stopped(zero, { value: 'N', at: 100 }, 100), false);
-    assert.equal(stopped({ value: { speedVehicleCentreOfGravity: 65535 }, at: 100 }, gear, 100), false);
+    const alternate = { value: 3, at: 100 };
+    assert.equal(parkingIssue(zero, gear, 200), null);
+    assert.equal(parkingIssue(zero, null, 200, alternate), null);
+    assert.equal(parkingIssue(zero, null, 200, { ...alternate, value: 'NP' }), 'No fresh selector reading confirming P');
+    assert.match(parkingIssue(zero, gear, 200, { ...alternate, value: 1 }), /other than P/);
+    assert.match(parkingIssue(zero, gear, 3101), /stale/);
+    assert.match(parkingIssue(null, gear, 100), /missing/);
+    assert.match(parkingIssue(zero, { value: 'N', at: 100 }, 100), /other than P/);
+    assert.match(parkingIssue({ value: { speedVehicleCentreOfGravity: 65535 }, at: 100 }, gear, 100), /invalid/);
     for (const [field, value, code] of [
         ['parked', false, 'parked'], ['speedKnown', false, 'parked'], ['enabled', false, 'writeDisabled'],
         ['visible', false, 'writeDisabled'], ['version', 'other', 'firmware']
@@ -353,6 +387,8 @@ test('Motion, unknown speed, stale samples, unknown firmware and disabled writes
     await h.workflow.refresh();
     h.signal.beforeCall = (sid) => { if (sid === 0x31) h.state.parked = false; };
     assert.equal(await h.workflow.create(), false);
+    assert.equal(h.workflow.detail.request, '31 01 A1 9A');
+    assert.match(h.workflow.detail.reason, /other than P/);
     assert.deepEqual(h.signal.requests, [ident, list, list]);
 });
 
@@ -481,17 +517,12 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     await clicks.REFRESH();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
     assert.equal(labels.STATUS, 'Profiles refreshed.');
-    assert.equal(labels.NRC, '22 E3 33 · Skipped ' + extraBytes + ' bytes after guest ID.');
+    assert.equal(labels.NRC, 'Last error · 22 E3 33 · 8 UDS bytes · Missing profile field separator');
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
 
-test('UI activates from the profile list and renames the active account after returning from iDrive', async (t) => {
-    const verified = require('../apps/offline_profile_manager/verified-firmware');
-    const software = { version: 'ui-test-firmware', variantId: 'test-variant' };
-    verified.push({ index: '0F25B0', ...software, actions: ['login', 'rename'] });
-    t.after(() => verified.pop());
-
-    let activeId = user, userName = 'Zoë';
+test('UI retains an activation failure and supports switching and rename on the approved build', async () => {
+    let activeId = user, userName = 'Zoë', denyActivation = true;
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {
             if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => 'current' };
@@ -508,16 +539,18 @@ test('UI activates from the profile list and renames the active account after re
 
         async watch(iface, instance, handlers) {
             if (iface.endsWith('Vehicle2')) handlers.statusCarSpeed2({ speedVehicleCentreOfGravity: 0 });
-            else handlers.statusGearboxDrive({ statusActualStageDrive: 'P' });
+            else handlers.DataPowerTrain2({ statusGearSelectionDrive: 'P' });
             return { available: true };
         }
     }
     const signals = new ProfileSignals((bytes) => {
         if (bytes[1] === 0xf1) return identReply;
         if (bytes[0] === 0x22) {
-            return listReply(Array.from(Buffer.from([user, userName, added, 'TEST_NAME', '', '', guest].join('\0') + '\0')));
+            const accounts = Array.from(Buffer.from([user, userName, added, 'TEST_NAME', '', '', guest].join('\0') + '\0'));
+            return listReply(accounts.concat(0xa5));
         }
         if (bytes[2] === 0x34) {
+            if (denyActivation) return [0x7f, 0x2e, 0x22];
             activeId = added;
             return [0x6e, 0xe3, 0x34];
         }
@@ -553,10 +586,20 @@ test('UI activates from the profile list and renames the active account after re
     settings.set('writes', true);
     enter('MAIN');
     await settle();
+    assert.equal(labels.PARK, 'Parked · Verified');
+    assert.equal(labels.NRC, '22 E3 33 · Skipped 1 bytes after guest ID.');
     assert.equal(enabled.PROFILE_0, false);
     assert.equal(enabled.PROFILE_1, true);
     await clicks.PROFILE_1();
     assert.equal(labels.CONFIRM_TEXT, 'Activate profile “TEST_NAME”?');
+    await clicks.APPLY();
+    assert.match(labels.CONFIRM_TEXT, /NRC 0x22/);
+    await clicks.APPLY();
+    await settle();
+    assert.equal(labels.NRC, 'Last error · 2E E3 34 · ECU rejected the request. NRC 0x22.');
+
+    denyActivation = false;
+    await clicks.PROFILE_1();
     await clicks.APPLY();
     assert.equal(labels.CONFIRM_TEXT, 'Active profile confirmed.');
     await clicks.APPLY();
@@ -574,5 +617,5 @@ test('UI activates from the profile list and renames the active account after re
     assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “Zoë” to “A”?');
     await clicks.APPLY();
     assert.equal(labels.CONFIRM_TEXT, 'New name confirmed.');
-    assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), renameRequest('A')]);
+    assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), loginRequest(added), renameRequest('A')]);
 });

@@ -19,14 +19,35 @@ function field(value, key) {
     return value;
 }
 
-function stopped(speed, gear, now) {
-    if (!speed || !gear || now < speed.at || now < gear.at ||
-        now - speed.at > AGE_MS || now - gear.at > AGE_MS) return false;
-    const value = speed.value;
-    // Exact zero in Vehicle2's native scaling. Reject unavailable and invalid samples.
-    return !!value && Number.isInteger(value.speedVehicleCentreOfGravity) &&
-        value.speedVehicleCentreOfGravity === 0 &&
-        (gear.value === 'P' || gear.value === 1);
+function fresh(sample, now) {
+    return sample && now >= sample.at && now - sample.at <= AGE_MS ? sample.value : null;
+}
+
+function selectorInPark(value, alternate) {
+    if (Number.isInteger(value)) {
+        if (alternate) {
+            if (value === 3) return true;
+            if (value === 1 || value === 2 || (value >= 5 && value <= 13)) return false;
+        } else if (value >= 1 && value <= 4) {
+            return value === 1;
+        }
+    }
+    if (value === 'P') return true;
+    if (['R', 'N', 'D'].includes(value) || (alternate && typeof value === 'string' && /^_[1-9]$/.test(value))) return false;
+    return null; // NP/N_OR_P and invalid values cannot verify Park.
+}
+
+function parkingIssue(speed, gear, now, alternateGear) {
+    const speedReading = fresh(speed, now);
+    if (!speedReading) return 'Speed sample missing or stale';
+    const value = speedReading.speedVehicleCentreOfGravity;
+    if (!Number.isInteger(value) || value < 0 || value >= 65535) return 'Speed sample invalid';
+    if (value !== 0) return 'Vehicle speed is above 0 km/h';
+    const primary = selectorInPark(fresh(gear, now), false);
+    const alternate = selectorInPark(fresh(alternateGear, now), true);
+    if (primary === false || alternate === false) return 'A selector signal reports a position other than P';
+    if (primary !== true && alternate !== true) return 'No fresh selector reading confirming P';
+    return null;
 }
 
 async function read(proxy, key) {
@@ -42,11 +63,13 @@ class Vehicle {
         this.now = now;
         this.speed = null;
         this.gear = null;
+        this.alternateGear = null;
         this.speedLink = null;
         this.gearLink = null;
         this.sessionLink = null;
         this.sessionEpoch = 0;
         this.watchedSession = false;
+        this.activeIssue = 'SessionManager unavailable';
     }
 
     async init() {
@@ -58,10 +81,16 @@ class Vehicle {
                 pollMs: 1000,
                 onAvailable: (up) => { if (!up) this.speed = null; }
             }).then((link) => { this.speedLink = link; }),
-            signals.watch(GEAR, '1', { statusGearboxDrive: (value) => {
-                this.gear = { value: value && value.statusActualStageDrive, at: this.now() };
-            } }, silent, {
-                onAvailable: (up) => { if (!up) this.gear = null; }
+            signals.watch(GEAR, '1', {
+                statusGearboxDrive: (value) => {
+                    this.gear = { value: value && value.statusActualStageDrive, at: this.now() };
+                },
+                DataPowerTrain2: (value) => {
+                    this.alternateGear = { value: value && value.statusGearSelectionDrive, at: this.now() };
+                }
+            }, silent, {
+                pollMs: 1000,
+                onAvailable: (up) => { if (!up) this.gear = this.alternateGear = null; }
             }).then((link) => { this.gearLink = link; }),
             this.initSession()
         ]);
@@ -80,23 +109,30 @@ class Vehicle {
         }
     }
 
-    stationary() {
-        return !!(this.speedLink && this.speedLink.available && this.gearLink && this.gearLink.available &&
-            stopped(this.speed, this.gear, this.now()));
+    parkingIssue() {
+        if (!this.speedLink || !this.speedLink.available) return 'Speed signal provider unavailable';
+        if (!this.gearLink || !this.gearLink.available) return 'Selector signal provider unavailable';
+        return parkingIssue(this.speed, this.gear, this.now(), this.alternateGear);
     }
 
     async activeAccount() {
         let account;
         const epoch = this.sessionEpoch;
         try {
+            this.activeIssue = 'SessionManager unavailable';
+            if (!this.sessionLink || !this.sessionLink.isAvailable()) return null;
+            this.activeIssue = 'Active account reference unavailable';
             const reference = await read(this.sessionLink, REFERENCE);
             if (typeof reference !== 'string' || !reference || reference.length > 128 || /[\x00-\x1f\x7f]/.test(reference)) return null;
+            this.activeIssue = 'Active account ID unavailable';
             account = await this.signals.proxy(ACCOUNT, reference);
             const id = await read(account, 'id');
             if (typeof id !== 'string' || !id || /[^ -~]/.test(id)) return null;
             let type;
             try { type = await read(account, 'type'); } catch (e) { type = null; }
+            this.activeIssue = 'Active account changed during verification';
             if (await read(this.sessionLink, REFERENCE) !== reference || this.sessionEpoch !== epoch) return null;
+            this.activeIssue = null;
             return { id, type: profileType(type), epoch, at: this.now() };
         } catch (e) {
             return null;
@@ -121,4 +157,4 @@ function profileType(type) {
     return null;
 }
 
-module.exports = { Vehicle, monotonicMs, stopped };
+module.exports = { Vehicle, monotonicMs, parkingIssue };

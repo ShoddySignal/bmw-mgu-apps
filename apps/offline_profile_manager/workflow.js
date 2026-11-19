@@ -26,9 +26,16 @@ class Workflow {
         this.created = new Set(this.pendingPiaId ? [this.pendingPiaId] : []);
         this.state = 'idle';
         this.detail = null;
+        this.operation = null;
+        this.lastError = null;
     }
 
     stage(state, detail) {
+        if (state === 'error') {
+            detail.operation = this.operation;
+            detail.afterAcceptance = this.state === 'accepted';
+            this.lastError = detail;
+        }
         this.state = state;
         this.detail = detail || null;
         this.changed();
@@ -48,13 +55,14 @@ class Workflow {
         this.stage('error', new DiagnosticError('offline'));
     }
 
-    async run(action) {
+    async run(operation, action) {
         if (this.busy) return false;
         const generation = this.generation;
         const current = () => {
             if (generation !== this.generation) throw new DiagnosticError('offline');
         };
         this.busy = true;
+        this.operation = operation;
         this.stage('waiting');
         try {
             await action(current);
@@ -64,12 +72,13 @@ class Workflow {
             return false;
         } finally {
             this.busy = false;
+            this.operation = null;
             this.changed();
         }
     }
 
     async refresh() {
-        return this.run(async (current) => {
+        return this.run('refresh', async (current) => {
             this.identity = null;
             this.profiles = null;
             this.extraAccountBytes = 0;
@@ -78,8 +87,8 @@ class Workflow {
             current();
             this.identity = identity;
             if (!identity.isMgu) throw new DiagnosticError('variant');
-            const profiles = await this.readProfiles(current, { allowExtraData: true });
-            if (!this.extraAccountBytes && this.pendingPiaId &&
+            const profiles = await this.readProfiles(current, { forDisplay: true });
+            if (this.accountLayoutPermitsWrites() && this.pendingPiaId &&
                 !profiles.some((p) => p.id === this.pendingPiaId && p.type !== 'guest')) {
                 this.setPendingPia(null);
                 throw new DiagnosticError('profileMissing');
@@ -88,8 +97,11 @@ class Workflow {
         });
     }
 
-    async readProfiles(current, options) {
-        const { profiles, extraBytes } = await this.diag.accounts(options);
+    async readProfiles(current, { forDisplay = false } = {}) {
+        const firmware = this.firmwareEntry();
+        const { profiles, extraBytes } = await this.diag.accounts({
+            allowExtraData: forDisplay || !!(firmware && firmware.allowExtraAccountData)
+        });
         const active = await this.vehicle.activeAccount();
         current();
         this.profiles = profiles;
@@ -98,24 +110,34 @@ class Workflow {
         return profiles;
     }
 
-    approved(action) {
-        if (!this.identity || !this.identity.isMgu || this.extraAccountBytes) return false;
+    firmwareEntry() {
+        if (!this.identity || !this.identity.isMgu) return null;
         const software = this.firmware();
-        return !!software && this.verified.some((item) => item.index === this.identity.index &&
-            item.version === software.version && item.variantId === software.variantId &&
-            item.actions.includes(action) && (action !== 'create' || item.actions.includes('pia')));
+        return software && this.verified.find((item) => item.index === this.identity.index &&
+            item.version === software.version && item.variantId === software.variantId);
+    }
+
+    accountLayoutPermitsWrites(firmware = this.firmwareEntry()) {
+        return !this.extraAccountBytes || !!(firmware && firmware.allowExtraAccountData);
+    }
+
+    approved(action) {
+        const firmware = this.firmwareEntry();
+        return !!firmware && this.accountLayoutPermitsWrites(firmware) && firmware.actions.includes(action) &&
+            (action !== 'create' || firmware.actions.includes('pia'));
     }
 
     permit(action, current, active) {
         current();
         if (!this.writeEnabled() || !this.visible()) throw new DiagnosticError('writeDisabled');
         if (!this.approved(action)) throw new DiagnosticError('firmware');
-        if (!this.vehicle.stationary()) throw new DiagnosticError('parked');
+        const parkingIssue = this.vehicle.parkingIssue();
+        if (parkingIssue) throw Object.assign(new DiagnosticError('parked'), { reason: parkingIssue });
         if (active && !this.vehicle.stillActive(active)) throw new DiagnosticError('active');
     }
 
     async create() {
-        return this.run(async (current) => {
+        return this.run('create', async (current) => {
             this.permit('create', current);
             if (this.pendingPiaId) throw new DiagnosticError('piaPending');
             const before = await this.readProfiles(current);
@@ -137,7 +159,10 @@ class Workflow {
                 if (result.status === 2 || result.status === 3 || result.status === 255) break;
             }
             if (!result || result.status !== 2) {
-                throw new DiagnosticError(result && (result.status === 3 || result.status === 255) ? 'createFailed' : 'createPending');
+                const error = new DiagnosticError(result && (result.status === 3 || result.status === 255) ? 'createFailed' : 'createPending');
+                error.request = '31 03 A1 9A';
+                if (result) error.reason = 'Creation status 0x' + result.status.toString(16).toUpperCase().padStart(2, '0');
+                throw error;
             }
 
             let created = null;
@@ -165,7 +190,7 @@ class Workflow {
     async completePia(account, current) {
         this.stage('settingPia');
         this.active = null;
-        // Only approve firmware where E333 slots 1–3 correspond to PIA slots 0–2.
+        // The E333 list is one-based while the documented PIA slots are zero-based.
         await this.diag.setPermanentPia(account.slot - 1, () => this.permit('pia', current));
         current();
         this.setPendingPia(null);
@@ -215,7 +240,7 @@ class Workflow {
     }
 
     profileAction(action, id, perform) {
-        return this.run(async (current) => {
+        return this.run(action, async (current) => {
             this.permit(action, current);
             const profiles = await this.readProfiles(current);
             const account = profiles.find((p) => p.id === id && p.type !== 'guest');

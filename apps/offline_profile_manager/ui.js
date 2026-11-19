@@ -33,9 +33,35 @@ const CONFIRMED = {
     login: 'Active profile confirmed.',
     rename: 'New name confirmed.'
 };
+const OPERATIONS = { refresh: 'Read profiles', create: 'Create profile', pia: 'PIA setup', login: 'Activate profile', rename: 'Rename profile' };
 
 function profileLabel(name) {
     return Array.from(name || 'Unnamed').slice(0, 38).join('');
+}
+
+function errorMessage(error) {
+    if (error.code === 'nrc') {
+        return 'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.';
+    }
+    return ERRORS[error.code] || 'The diagnostic operation did not finish.';
+}
+
+function diagnostic(workflow, message) {
+    const error = workflow.lastError;
+    if (error) {
+        const previous = workflow.state === 'error' ? '' : 'Last error · ';
+        const phase = error.afterAcceptance ? 'After ECU acceptance · ' : '';
+        if (error.code === 'payload' && error.request) {
+            return previous + error.request + ' · ' + phase + error.replyLength + ' UDS bytes · ' + error.reason;
+        }
+        const step = error.request || OPERATIONS[error.operation];
+        const reason = error.reason || errorMessage(error);
+        return previous + (step ? step + ' · ' : '') + phase + reason;
+    }
+    if (workflow.state === 'ready' && workflow.extraAccountBytes) {
+        return '22 E3 33 · Skipped ' + workflow.extraAccountBytes + ' bytes after guest ID.';
+    }
+    return message;
 }
 
 function status(workflow) {
@@ -51,12 +77,8 @@ function status(workflow) {
     case 'ready': return workflow.pendingPiaId ? 'Profile created. Choose Finish profile setup.' : 'Profiles refreshed.';
     case 'error': {
         const error = workflow.detail;
-        let message = ERRORS[error.code] || 'The diagnostic operation did not finish.';
-        if (error.code === 'nrc') {
-            message = 'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.';
-        } else if (error.code === 'payload' && error.request) {
-            message = 'Unexpected reply to ' + error.request + '. See Diagnostics.';
-        }
+        const message = error.code === 'payload' && error.request ?
+            'Unexpected reply to ' + error.request + '. See Diagnostics.' : errorMessage(error);
         return workflow.pendingPiaId ? 'PIA setup pending. ' + message : message;
     }
     default: return 'Read-only mode. Open the app to connect to HU_MGU.';
@@ -122,14 +144,9 @@ async function start(ctx, kit, sdk) {
         }
         const profiles = work.profiles || [];
         const message = status(work);
-        const error = work.state === 'error' && work.detail;
-        let diagnostic = message;
-        if (error && error.code === 'payload' && error.request) {
-            diagnostic = error.request + ' · ' + error.replyLength + ' UDS bytes · ' + error.reason;
-        } else if (work.state === 'ready' && work.extraAccountBytes) {
-            diagnostic = '22 E3 33 · Skipped ' + work.extraAccountBytes + ' bytes after guest ID.';
-        }
         const activeId = work.active && work.active.id;
+        const parkingIssue = vehicle.parkingIssue();
+        const activeIssue = work.profiles ? vehicle.activeIssue || 'Active ID absent from profile list' : 'Profile list unavailable';
         const pending = work.pendingPiaId;
         const firmwareReady = ['create', 'login', 'pia', 'rename'].some((action) => work.approved(action));
         const rows = PROFILE_ROWS.map((name, i) => {
@@ -157,14 +174,14 @@ async function start(ctx, kit, sdk) {
                 ui.enabled('CREATE', pending ? !!can('resumePia', pending) : !!can('create')),
                 ui.enabled('RENAME', !!can('rename', activeId)),
                 ui.text('WRITE_STATE', firmwareReady ?
-                    (settings.get('writes') ? 'Writes are allowed while parked' : 'Writes are off') :
+                    (settings.get('writes') ? 'Test writes are allowed while parked' : 'Writes are off') :
                     'Writes are blocked on this firmware'),
                 ui.text('ID_INDEX', 'SGBD index · ' + (work.identity ? work.identity.index : 'Unavailable')),
                 ui.text('ID_VERSION', 'Software version · ' + (software ? software.version : 'Unavailable')),
                 ui.text('ID_VARIANT', 'Software variant · ' + (software ? software.variantId : 'Unavailable')),
-                ui.text('ACTIVE', 'Active account · ' + (work.active ? 'Verified' : 'Unverified')),
-                ui.text('PARK', 'Parked · ' + (vehicle.stationary() ? 'Verified' : 'Unverified')),
-                ui.text('NRC', diagnostic),
+                ui.text('ACTIVE', 'Active account · ' + (work.active ? 'Verified' : activeIssue)),
+                ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
+                ui.text('NRC', diagnostic(work, message)),
                 ui.text('DRAFT', 'New name · ' + (draft || '—')),
                 ui.enabled('RENAME_NEXT', validName(draft)),
                 ui.enabled('APPLY', !work.busy && !!intent && (intent.phase === 'confirm' || intent.phase === 'done')),

@@ -1,7 +1,7 @@
 {
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
-  "description": "Read-only driver profile diagnostics for BMW iDrive 7 and HU_MGU.",
+  "description": "Driver profile diagnostics and management for BMW iDrive 7 and HU_MGU.",
   "version": "0.1.1",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
@@ -25,7 +25,8 @@
     },
     "de.bmw.infrastructure.VehicleInformation": {
       "_instances": "1",
-      "statusGearboxDrive": "s",
+      "statusGearboxDrive": "rs",
+      "DataPowerTrain2": "rs",
       "_optional": "Writes require a gear selector signal"
     }
   },
@@ -269,12 +270,12 @@
           "Software variant"
         ],
         [
-          "text",
+          "text3",
           "PARK",
           "Parking status"
         ],
         [
-          "text",
+          "text3",
           "ACTIVE",
           "Active account"
         ],
