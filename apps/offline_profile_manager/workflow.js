@@ -4,7 +4,8 @@ const { DiagnosticError, createdProfile } = require('./profiles');
 const { loginRequest, validName } = require('./diag');
 
 class Workflow {
-    constructor(diag, vehicle, { writeEnabled, visible, firmware, verified, changed, wait, now }) {
+    constructor(diag, vehicle, { writeEnabled, visible, firmware, verified, changed, wait, now,
+        pendingPiaId, savePendingPia = () => {} }) {
         this.diag = diag;
         this.vehicle = vehicle;
         this.writeEnabled = writeEnabled;
@@ -19,7 +20,9 @@ class Workflow {
         this.identity = null;
         this.profiles = null;
         this.active = null;
-        this.created = new Set();
+        this.pendingPiaId = typeof pendingPiaId === 'string' && pendingPiaId ? pendingPiaId : null;
+        this.savePendingPia = savePendingPia;
+        this.created = new Set(this.pendingPiaId ? [this.pendingPiaId] : []);
         this.state = 'idle';
         this.detail = null;
     }
@@ -28,6 +31,11 @@ class Workflow {
         this.state = state;
         this.detail = detail || null;
         this.changed();
+    }
+
+    setPendingPia(id) {
+        this.pendingPiaId = id;
+        this.savePendingPia(id);
     }
 
     disconnected() {
@@ -67,7 +75,11 @@ class Workflow {
             current();
             this.identity = identity;
             if (!identity.isMgu) throw new DiagnosticError('variant');
-            await this.readProfiles(current);
+            const profiles = await this.readProfiles(current);
+            if (this.pendingPiaId && !profiles.some((p) => p.id === this.pendingPiaId && p.type !== 'guest')) {
+                this.setPendingPia(null);
+                throw new DiagnosticError('profileMissing');
+            }
             this.stage('ready');
         });
     }
@@ -86,7 +98,7 @@ class Workflow {
         const software = this.firmware();
         return !!software && this.verified.some((item) => item.index === this.identity.index &&
             item.version === software.version && item.variantId === software.variantId &&
-            item.actions.includes(action));
+            item.actions.includes(action) && (action !== 'create' || item.actions.includes('pia')));
     }
 
     permit(action, current, active) {
@@ -100,6 +112,7 @@ class Workflow {
     async create() {
         return this.run(async (current) => {
             this.permit('create', current);
+            if (this.pendingPiaId) throw new DiagnosticError('piaPending');
             const before = await this.readProfiles(current);
             if (before.filter((p) => p.type !== 'guest').length >= 3) throw new DiagnosticError('capacity');
 
@@ -131,8 +144,27 @@ class Workflow {
             }
             if (!created) throw new DiagnosticError('createMissing');
             this.created.add(created.id);
-            this.stage('confirmed', { action: 'create', id: created.id });
+            this.setPendingPia(created.id);
+            await this.completePia(created, current);
         });
+    }
+
+    resumePia(id, slot) {
+        return this.profileAction('pia', id, async (account, current) => {
+            if (account.id !== this.pendingPiaId) throw new DiagnosticError('profileMissing');
+            if (account.slot !== slot) throw new DiagnosticError('slotChanged');
+            await this.completePia(account, current);
+        });
+    }
+
+    async completePia(account, current) {
+        this.stage('settingPia');
+        this.active = null;
+        // Only approve firmware where E333 slots 1–3 correspond to PIA slots 0–2.
+        await this.diag.setPermanentPia(account.slot - 1, () => this.permit('pia', current));
+        current();
+        this.setPendingPia(null);
+        this.stage('confirmed', { action: 'create', id: account.id, name: account.name });
     }
 
     login(id) {

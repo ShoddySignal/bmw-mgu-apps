@@ -73,13 +73,8 @@
         ],
         [
           "button",
-          "LOGIN",
-          "Activate"
-        ],
-        [
-          "button",
           "RENAME",
-          "Rename"
+          "Rename active profile"
         ],
         [
           "button",
@@ -150,6 +145,11 @@
       "kind": "menu",
       "title": "Rename profile",
       "items": [
+        [
+          "text",
+          "CURRENT_PROFILE",
+          "Current profile"
+        ],
         [
           "text",
           "DRAFT",

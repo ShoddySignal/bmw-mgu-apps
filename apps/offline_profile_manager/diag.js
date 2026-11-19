@@ -28,6 +28,8 @@ function piaRequest(slot, mode) {
     return [0x31, 0x01, 0x02, 0x08, 0x04, slot, mode];
 }
 
+const PIA_PERMANENT = [0, 1, 2].map((slot) => piaRequest(slot, 2));
+
 function decodeReply(request, uds) {
     if (uds === null) throw new DiagnosticError('timeout');
     if (!uds || !uds.length || Array.from(uds).some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
@@ -57,7 +59,7 @@ class ProfileDiag {
 
     async request(bytes, beforeSend) {
         const read = bytes === IDENT || bytes === ACCOUNTS || bytes === CREATION_RESULT;
-        const write = bytes === CREATE || (bytes[0] === 0x2e && bytes[1] === 0xe3 &&
+        const write = bytes === CREATE || PIA_PERMANENT.includes(bytes) || (bytes[0] === 0x2e && bytes[1] === 0xe3 &&
             (bytes[2] === 0x34 || bytes[2] === 0x35));
         if (!read && (!write || typeof beforeSend !== 'function')) throw new DiagnosticError('writeDisabled');
         if (this.busy) throw new DiagnosticError('busy');
@@ -100,6 +102,10 @@ class ProfileDiag {
     create(permit) { return this.write(CREATE, permit); }
     login(id, permit) { return this.write(loginRequest(id), permit); }
     rename(name, permit) { return this.write(renameRequest(name), permit); }
+    setPermanentPia(slot, permit) {
+        if (!Number.isInteger(slot) || !PIA_PERMANENT[slot]) throw new DiagnosticError('argument');
+        return this.write(PIA_PERMANENT[slot], permit);
+    }
     write(bytes, permit) {
         if (typeof permit !== 'function') throw new DiagnosticError('writeDisabled');
         return this.request(bytes, permit);

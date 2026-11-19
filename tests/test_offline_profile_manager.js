@@ -14,6 +14,8 @@ const ident = [0x22, 0xf1, 0x50];
 const list = [0x22, 0xe3, 0x33];
 const create = [0x31, 1, 0xa1, 0x9a];
 const result = [0x31, 3, 0xa1, 0x9a];
+const permanent = [0x31, 0x01, 0x02, 0x08, 0x04, 0x01, 0x02];
+const permanentReply = [0x71, 0x01, 0x02, 0x08];
 const user = 'USER001', added = 'NEW0002', guest = 'GUEST00';
 const empty = Array.from(Buffer.from([user, 'Zoë', '', '', '', '', guest].join('\0') + '\0'));
 const full = Array.from(Buffer.from([user, 'Zoë', added, 'TEST_NAME', '', '', guest].join('\0') + '\0'));
@@ -84,7 +86,10 @@ async function harness(exchange, overrides = {}) {
         writeEnabled: () => state.enabled,
         visible: () => state.visible,
         firmware: () => version,
-        verified: [{ index: '0F25B0', version: version.version, variantId: version.variantId, actions: ['create', 'login', 'rename'] }],
+        verified: [{
+            index: '0F25B0', version: version.version, variantId: version.variantId,
+            actions: overrides.actions || ['create', 'pia', 'login', 'rename']
+        }],
         changed: () => stages.push(workflow.state),
         wait: async (ms) => { time += ms; },
         now: () => time,
@@ -139,6 +144,7 @@ test('Creates precisely one new account after RRR and list verification', async 
     let reading = 0, polling = 0;
     const h = await harness((bytes, signals) => {
         if (bytes[0] === 0x22) return listReply(reading++ < 2 ? empty : full);
+        if (bytes[2] === 0x02) return permanentReply;
         if (bytes[1] === 3) return routineReply(++polling === 1 ? 1 : 2, added);
         signals.frame([0x71, 1, 0xa1, 0x9a], 0x62);
         signals.frame([0x71, 1, 0xa1, 0x9b]);
@@ -149,7 +155,7 @@ test('Creates precisely one new account after RRR and list verification', async 
     assert.equal(await h.workflow.create(), true);
     assert.equal(h.workflow.detail.id, added);
     assert.ok(h.stages.indexOf('accepted') < h.stages.indexOf('confirmed'));
-    assert.deepEqual(h.signal.requests, [ident, list, list, create, result, result, list]);
+    assert.deepEqual(h.signal.requests, [ident, list, list, create, result, result, list, permanent]);
     assert.ok(h.messages.every((line) => !line.includes(user) && !line.includes(added)));
 });
 
@@ -163,6 +169,7 @@ test('Creation is unconfirmed if the ECU finishes but the new ID is missing or m
         await h.workflow.refresh();
         assert.equal(await h.workflow.create(), false);
         assert.equal(h.workflow.detail.code, 'createMissing');
+        assert.equal(h.workflow.pendingPiaId, null);
         assert.equal(h.signal.requests.filter((b) => b[0] === 0x31 && b[1] === 1).length, 1);
         assert.equal(h.signal.requests.some((b) => b[0] === 0x2e), false);
     }
@@ -191,6 +198,87 @@ test('Activation requires an independent exact active-account match before renam
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [
         loginRequest(added), loginRequest(added), renameRequest('My Driver')
     ]);
+});
+
+test('Creates a profile, sets its PIA slot, and renames it after selection in iDrive', async () => {
+    let accounts = empty;
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) return listReply(accounts);
+        if (bytes[2] === 0xa1) {
+            if (bytes[1] === 1) return [0x71, 1, 0xa1, 0x9a];
+            accounts = full;
+            return routineReply(2, added);
+        }
+        if (bytes[0] === 0x31) {
+            assert.deepEqual(bytes, permanent);
+            return permanentReply;
+        }
+        accounts = Array.from(Buffer.from([user, 'Zoë', added, 'Driver 2', '', '', guest].join('\0') + '\0'));
+        return [0x6e, 0xe3, 0x35];
+    }, { actions: ['create', 'pia', 'rename'] });
+    assert.equal(await h.workflow.refresh(), true);
+    assert.equal(await h.workflow.create(), true);
+    assert.equal(h.workflow.detail.id, added);
+    assert.equal(h.workflow.detail.name, 'TEST_NAME');
+    assert.equal(h.state.active, user);
+    assert.equal(h.workflow.pendingPiaId, null);
+    assert.equal(await h.workflow.rename(added, 'Driver 2'), false);
+    assert.equal(h.workflow.detail.code, 'active');
+
+    h.state.active = added; // The driver selected the account in iDrive.
+    assert.equal(await h.workflow.refresh(), true);
+    assert.equal(await h.workflow.rename(added, 'Driver 2'), true);
+    assert.deepEqual(h.signal.requests.filter((b) => b[0] !== 0x22), [
+        create, result, permanent, renameRequest('Driver 2')
+    ]);
+});
+
+test('PIA requires its own firmware approval, an unchanged driver slot and Park at dispatch', async () => {
+    const locked = await harness(() => listReply(empty), { actions: ['create', 'login', 'rename'] });
+    await locked.workflow.refresh();
+    assert.equal(await locked.workflow.create(), false);
+    assert.equal(locked.workflow.detail.code, 'firmware');
+    assert.deepEqual(locked.signal.requests, [ident, list]);
+
+    const h = await harness(() => listReply(full), { actions: ['pia'], options: { pendingPiaId: added } });
+    await h.workflow.refresh();
+    assert.equal(await h.workflow.resumePia(guest, null), false);
+    assert.equal(h.workflow.detail.code, 'profileMissing');
+    assert.equal(await h.workflow.resumePia(user, 1), false);
+    assert.equal(h.workflow.detail.code, 'profileMissing');
+    assert.equal(await h.workflow.resumePia(added, 1), false);
+    assert.equal(h.workflow.detail.code, 'slotChanged');
+    h.signal.beforeCall = (sid) => { if (sid === 0x31) h.state.parked = false; };
+    assert.equal(await h.workflow.resumePia(added, 2), false);
+    assert.equal(h.workflow.detail.code, 'parked');
+    assert.ok(h.signal.requests.every((b) => b[0] === 0x22));
+});
+
+test('A failed PIA step preserves the new profile and resumes after restart without creating again', async () => {
+    let accounts = empty, savedId = null;
+    const savePendingPia = (id) => { savedId = id; };
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) return listReply(accounts);
+        if (bytes[1] === 3) {
+            accounts = full;
+            return routineReply(2, added);
+        }
+        return bytes[2] === 0xa1 ? [0x71, 1, 0xa1, 0x9a] : [0x7f, 0x31, 0x22];
+    }, { options: { savePendingPia } });
+    await h.workflow.refresh();
+    assert.equal(await h.workflow.create(), false);
+    assert.equal(h.workflow.detail.code, 'nrc');
+    assert.equal(savedId, added);
+    assert.equal(await h.workflow.create(), false);
+    assert.equal(h.workflow.detail.code, 'piaPending');
+    assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x31), [create, result, permanent]);
+
+    const restarted = await harness((bytes) => bytes[0] === 0x22 ? listReply(accounts) : permanentReply,
+        { options: { pendingPiaId: savedId, savePendingPia } });
+    await restarted.workflow.refresh();
+    assert.equal(await restarted.workflow.resumePia(added, 2), true);
+    assert.equal(savedId, null);
+    assert.deepEqual(restarted.signal.requests.filter((b) => b[0] === 0x31), [permanent]);
 });
 
 test('Rejects a rename if the active account changes before TASU dispatch', async () => {
@@ -245,11 +333,14 @@ test('Motion, unknown speed, stale samples, unknown firmware and disabled writes
     assert.deepEqual(h.signal.requests, [ident, list, list]);
 });
 
-test('Read-only mode rejects prohibited PIA, delete, key and security requests', async () => {
+test('Transport rejects raw PIA, delete, key and security requests', async () => {
     const h = await harness(() => listReply(empty));
-    for (const bytes of [piaRequest(0, 1), [0x31, 1, 0xa1, 0x9b], [0x31, 1, 0xa1, 0xbd], [0x27, 1], [0x11, 1]]) {
+    for (const bytes of [piaRequest(0, 1), piaRequest(0, 2), piaRequest(10, 2),
+        [0x31, 1, 0xa1, 0x9b], [0x31, 1, 0xa1, 0xbd], [0x27, 1], [0x11, 1]]) {
         await assert.rejects(h.diag.request(bytes, () => {}), { code: 'writeDisabled' });
     }
+    assert.throws(() => h.diag.setPermanentPia(10, () => {}), { code: 'argument' });
+    assert.throws(() => h.diag.setPermanentPia(0), { code: 'writeDisabled' });
     assert.deepEqual(h.signal.requests, []);
 });
 
@@ -325,8 +416,10 @@ test('UI starts without UDS, opens in read-only mode, and recovers after link lo
     assert.deepEqual(signals.requests, [ident, list]);
     assert.equal(labels.PROFILE_0, 'Zoë');
     assert.equal(enabled.CREATE, false);
+    assert.equal(enabled.PROFILE_0, false);
     value = true;
     await clicks.CREATE();
+    await clicks.PROFILE_0();
     assert.deepEqual(signals.requests, [ident, list]);
     signals.setAvailable(false);
     for (let i = 0; i < 3; i++) await new Promise(setImmediate);
@@ -336,4 +429,96 @@ test('UI starts without UDS, opens in read-only mode, and recovers after link lo
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
     assert.equal(labels.STATUS, 'Profiles refreshed.');
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
+});
+
+test('UI activates from the profile list and renames the active account after returning from iDrive', async (t) => {
+    const verified = require('../apps/offline_profile_manager/verified-firmware');
+    const software = { version: 'ui-test-firmware', variantId: 'test-variant' };
+    verified.push({ index: '0F25B0', ...software, actions: ['login', 'rename'] });
+    t.after(() => verified.pop());
+
+    let activeId = user, userName = 'Zoë';
+    class ProfileSignals extends FakeSignals {
+        async proxy(iface) {
+            if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => 'current' };
+            if (iface.endsWith('UserAccount')) {
+                return { isAvailable: () => true, getValue: async (key) => key === 'id' ? activeId : 'LOCAL' };
+            }
+            return super.proxy();
+        }
+
+        async onAvailable(proxy, handler) {
+            if (proxy.isAvailable) handler(true);
+            else await super.onAvailable(proxy, handler);
+        }
+
+        async watch(iface, instance, handlers) {
+            if (iface.endsWith('Vehicle2')) handlers.statusCarSpeed2({ speedVehicleCentreOfGravity: 0 });
+            else handlers.statusGearboxDrive({ statusActualStageDrive: 'P' });
+            return { available: true };
+        }
+    }
+    const signals = new ProfileSignals((bytes) => {
+        if (bytes[1] === 0xf1) return identReply;
+        if (bytes[0] === 0x22) {
+            return listReply(Array.from(Buffer.from([user, userName, added, 'TEST_NAME', '', '', guest].join('\0') + '\0')));
+        }
+        if (bytes[2] === 0x34) {
+            activeId = added;
+            return [0x6e, 0xe3, 0x34];
+        }
+        assert.equal(activeId, user);
+        userName = 'A';
+        return [0x6e, 0xe3, 0x35];
+    });
+    let screen = null, onVisible, onSetting;
+    const clicks = {}, labels = {}, enabled = {}, values = {};
+    function enter(name) {
+        const previous = screen;
+        screen = name;
+        if (previous) onVisible(previous, false);
+        if (name) onVisible(name, true);
+    }
+    const ui = {
+        isVisible: (name) => screen === name, hasFocus: () => true,
+        onVisible: (f) => { onVisible = f; }, onFocus() {},
+        onClick: (name, f) => { clicks[name] = f; },
+        text: async (name, value) => { labels[name] = value; },
+        cells: async () => {}, visible: async () => {}, selected: async () => {},
+        enabled: async (name, value) => { enabled[name] = value; },
+        open: async (name) => enter(name), close: async () => enter('MAIN')
+    };
+    const settings = {
+        get: (key) => values[key],
+        set: (key, value) => { values[key] = value; if (onSetting) onSetting(); },
+        onChange: (f) => { onSetting = f; }
+    };
+    const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(setImmediate); };
+    await start({ ui, settings, signals, spec }, kit,
+        { config: { get: () => '1' }, runtimeVariant: { getSoftwareVersion: () => software } });
+    settings.set('writes', true);
+    enter('MAIN');
+    await settle();
+    assert.equal(enabled.PROFILE_0, false);
+    assert.equal(enabled.PROFILE_1, true);
+    await clicks.PROFILE_1();
+    assert.equal(labels.CONFIRM_TEXT, 'Activate profile “TEST_NAME”?');
+    await clicks.APPLY();
+    assert.equal(labels.CONFIRM_TEXT, 'Active profile confirmed.');
+    await clicks.APPLY();
+    await settle();
+    assert.equal(enabled.PROFILE_1, false);
+
+    enter(null);
+    activeId = user; // The driver switched profiles in the stock UI.
+    enter('MAIN');
+    await settle();
+    await clicks.RENAME();
+    assert.equal(labels.CURRENT_PROFILE, 'Current profile · Zoë');
+    clicks.ADD_CHARACTER();
+    await clicks.RENAME_NEXT();
+    assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “Zoë” to “A”?');
+    await clicks.APPLY();
+    assert.equal(labels.CONFIRM_TEXT, 'New name confirmed.');
+    assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), renameRequest('A')]);
 });

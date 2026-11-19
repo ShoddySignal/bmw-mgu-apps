@@ -21,28 +21,40 @@ const ERRORS = {
     createFailed: 'ECU reported that profile creation failed.',
     createPending: 'ECU has yet to confirm creation. Refresh profiles.',
     createMissing: 'ECU reported completion. A unique new profile could not be identified.',
-    profileMissing: 'The selected profile is missing from the list.',
+    profileMissing: 'The profile is missing from the list.',
     active: 'Active account could not be verified. Select the profile from the BMW menu.',
+    slotChanged: 'The profile slot changed. Open Finish profile setup and confirm again.',
+    piaPending: 'Choose Finish profile setup to continue.',
     id: 'The profile ID has an unexpected format for activation.',
     name: 'Enter a name using up to 24 ASCII characters.',
     renameMissing: 'ECU accepted the request. The new name is awaiting confirmation.'
 };
 const CONFIRMED = {
-    create: 'Profile confirmed. You can now select Activate.',
     login: 'Active profile confirmed.',
     rename: 'New name confirmed.'
 };
+
+function profileLabel(name) {
+    return Array.from(name || 'Unnamed').slice(0, 38).join('');
+}
 
 function status(workflow) {
     switch (workflow.state) {
     case 'waiting': return 'Waiting for ECU reply...';
     case 'accepted': return 'ECU accepted the request. Checking the result...';
-    case 'confirmed': return CONFIRMED[workflow.detail.action];
-    case 'ready': return 'Profiles refreshed.';
+    case 'settingPia': return 'Profile created. Applying permanent PIA settings...';
+    case 'confirmed': {
+        if (workflow.detail.action !== 'create') return CONFIRMED[workflow.detail.action];
+        const where = workflow.approved('login') ? 'in the app or in iDrive' : 'in CAR → Driver Profiles';
+        return 'Created “' + profileLabel(workflow.detail.name) + '”. Select it ' + where + '.';
+    }
+    case 'ready': return workflow.pendingPiaId ? 'Profile created. Choose Finish profile setup.' : 'Profiles refreshed.';
     case 'error': {
         const error = workflow.detail;
-        if (error.code === 'nrc') return 'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.';
-        return ERRORS[error.code] || 'The diagnostic operation did not finish.';
+        const message = error.code === 'nrc' ?
+            'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.' :
+            ERRORS[error.code] || 'The diagnostic operation did not finish.';
+        return workflow.pendingPiaId ? 'PIA setup pending. ' + message : message;
     }
     default: return 'Read-only mode. Open the app to connect to HU_MGU.';
     }
@@ -60,7 +72,7 @@ async function start(ctx, kit, sdk) {
     link.busyLog = false;
     const diag = new ProfileDiag(link, kit.replyTo);
     const inFront = (name) => ui.isVisible(name) && ui.hasFocus(name);
-    let selectedId = null, intent = null, draft = '', key = 0;
+    let intent = null, draft = '', key = 0;
     let refreshPending = true, renderQueued = false, rendering = false;
     const keys = ctx.spec.screens.find((s) => s.name === 'EDIT').items.find((i) => i[1] === 'CHARACTER')[3];
     const work = new Workflow(diag, vehicle, {
@@ -70,20 +82,25 @@ async function start(ctx, kit, sdk) {
         verified,
         changed: schedule,
         wait,
-        now: monotonicMs
+        now: monotonicMs,
+        pendingPiaId: settings.get('pendingPiaId'),
+        savePendingPia: (id) => settings.set('pendingPiaId', id)
     });
 
-    function selected() {
-        return work.profiles && work.profiles.find((p) => p.id === selectedId) || null;
+    function driverProfile(id) {
+        return work.profiles && work.profiles.find((p) => p.id === id && p.type !== 'guest');
     }
 
-    function can(action) {
-        const profile = selected();
-        if (work.busy || !link.available || !work.profiles || settings.get('writes') !== true || !work.approved(action)) return false;
-        if (action === 'create') return work.profiles.filter((p) => p.type !== 'guest').length < 3;
-        if (!profile || profile.type === 'guest') return false;
-        if (action === 'login') return profile.id.length === 7;
-        return work.active && work.active.id === profile.id;
+    function can(action, id) {
+        if ((refreshPending && inFront('MAIN')) || work.busy || !link.available || !work.profiles || settings.get('writes') !== true ||
+            !work.approved(action === 'resumePia' ? 'pia' : action)) return false;
+        if (action === 'create') return !work.pendingPiaId && work.profiles.filter((p) => p.type !== 'guest').length < 3;
+        const profile = driverProfile(id);
+        if (!profile) return false;
+        if (action === 'resumePia') return id === work.pendingPiaId;
+        const active = work.active && work.active.id === id;
+        if (action === 'login') return !active && profile.id.length === 7;
+        return active;
     }
 
     function schedule() {
@@ -102,19 +119,22 @@ async function start(ctx, kit, sdk) {
         }
         const profiles = work.profiles || [];
         const message = status(work);
-        const firmwareReady = ['create', 'login', 'rename'].some((action) => work.approved(action));
+        const activeId = work.active && work.active.id;
+        const pending = work.pendingPiaId;
+        const firmwareReady = ['create', 'login', 'pia', 'rename'].some((action) => work.approved(action));
         const rows = PROFILE_ROWS.map((name, i) => {
             const profile = profiles[i];
             if (!profile) return ui.visible(name, false);
-            const active = work.active ? (work.active.id === profile.id ? 'Active' : 'Inactive') : 'Activity unknown';
+            const activate = !!can('login', profile.id);
+            const activity = activate ? 'Select to activate' : activeId ?
+                (activeId === profile.id ? 'Active' : 'Inactive') : 'Activity unknown';
             const type = TYPES[profile.type || (work.created.has(profile.id) ? 'local' : null) ||
                 (work.active && work.active.id === profile.id ? work.active.type : null)] || 'Unknown type';
-            const visibleName = Array.from(profile.name || 'Unnamed').slice(0, 48).join('');
             const position = profile.slot ? 'Slot ' + profile.slot + ' · ' + type : type;
-            return ui.cells(name, 0, {
-                Text1stRow: (selectedId === profile.id ? '✓ ' : '') + visibleName,
-                Text2ndRow: position + ' · ' + active
-            }).then(() => ui.visible(name, true));
+            return Promise.all([
+                ui.cells(name, 0, { Text1stRow: profileLabel(profile.name), Text2ndRow: position + ' · ' + activity }),
+                ui.enabled(name, activate)
+            ]).then(() => ui.visible(name, true));
         });
         try {
             await Promise.all(rows.concat([
@@ -123,9 +143,9 @@ async function start(ctx, kit, sdk) {
                     'TASU unavailable'),
                 ui.text('STATUS', work.state === 'ready' && !profiles.length ? 'No profiles found.' : message),
                 ui.enabled('REFRESH', !!link.available && !work.busy),
-                ui.enabled('CREATE', !!can('create')),
-                ui.enabled('LOGIN', !!can('login')),
-                ui.enabled('RENAME', !!can('rename')),
+                ui.text('CREATE', pending ? 'Finish profile setup' : 'Create offline profile'),
+                ui.enabled('CREATE', pending ? !!can('resumePia', pending) : !!can('create')),
+                ui.enabled('RENAME', !!can('rename', activeId)),
                 ui.text('WRITE_STATE', firmwareReady ?
                     (settings.get('writes') ? 'Writes are allowed while parked' : 'Writes are off') :
                     'Writes are blocked on this firmware'),
@@ -146,16 +166,9 @@ async function start(ctx, kit, sdk) {
         }
     }
 
-    function confirm(action, id, name, from) {
-        const profile = selected();
-        const label = profile ? Array.from(profile.name || 'Unnamed').slice(0, 38).join('') : '';
-        const message = {
-            create: 'Create a new local profile? This is the second confirmation.',
-            login: 'Activate profile “' + label + '”?',
-            rename: 'Rename active profile “' + label + '” to “' + name + '”?'
-        }[action];
-        intent = { action, id, name, phase: 'confirm' };
-        const current = intent;
+    function confirm(choice, message, from) {
+        const current = { ...choice, phase: 'confirm' };
+        intent = current;
         return Promise.resolve(from && ui.close(from)).then(() => ui.text('CONFIRM_TEXT', message)).then(() => {
             if (intent === current) return ui.open('CONFIRM');
         }).then(schedule);
@@ -163,9 +176,9 @@ async function start(ctx, kit, sdk) {
 
     PROFILE_ROWS.forEach((name, i) => ui.onClick(name, () => {
         const profile = work.profiles && work.profiles[i];
-        if (!inFront('MAIN') || work.busy || !profile) return;
-        selectedId = profile.id;
-        schedule();
+        if (inFront('MAIN') && profile && can('login', profile.id)) {
+            return confirm({ action: 'login', id: profile.id }, 'Activate profile “' + profileLabel(profile.name) + '”?');
+        }
     }));
     ui.onClick('REFRESH', () => {
         if (!inFront('MAIN') || !link.available || work.busy) return;
@@ -175,24 +188,30 @@ async function start(ctx, kit, sdk) {
     ui.onClick('OPEN_SETTINGS', () => ui.open('SETTINGS'));
     ui.onClick('DIAGNOSTICS', () => { schedule(); return ui.open('DETAILS'); });
     ui.onClick('CREATE', () => {
-        if (!inFront('MAIN') || !can('create')) return;
+        if (!inFront('MAIN')) return;
+        const pending = driverProfile(work.pendingPiaId);
+        if (pending && can('resumePia', pending.id)) {
+            return confirm({ action: 'resumePia', id: pending.id, value: pending.slot },
+                'Finish permanent PIA setup for “' + profileLabel(pending.name) + '” in slot ' + pending.slot + '?');
+        }
+        if (!can('create')) return;
         intent = { action: 'create', phase: 'warning' };
         return ui.open('CREATE_WARNING');
     });
     ui.onClick('CREATE_NEXT', () => {
         if (!inFront('CREATE_WARNING') || !intent || intent.phase !== 'warning' || !can('create')) return;
-        return confirm('create', null, null, 'CREATE_WARNING');
-    });
-    ui.onClick('LOGIN', () => {
-        if (inFront('MAIN') && can('login')) return confirm('login', selectedId);
+        return confirm({ action: 'create' }, 'Create a new local profile and set its slot to permanent PIA mode?', 'CREATE_WARNING');
     });
     ui.onClick('RENAME', () => {
-        if (!inFront('MAIN') || !can('rename')) return;
-        intent = { action: 'rename', id: selectedId, phase: 'edit' };
+        const profile = driverProfile(work.active && work.active.id);
+        if (!inFront('MAIN') || !profile || !can('rename', profile.id)) return;
+        const label = profileLabel(profile.name);
+        intent = { action: 'rename', id: profile.id, label, phase: 'edit' };
         draft = '';
         key = 0;
         schedule();
-        return ui.selected('CHARACTER', key).then(() => ui.open('EDIT'));
+        return Promise.all([ui.selected('CHARACTER', key), ui.text('CURRENT_PROFILE', 'Current profile · ' + label)])
+            .then(() => ui.open('EDIT'));
     });
     ui.onClick('CHARACTER', (event) => {
         if (inFront('EDIT') && Number.isInteger(event.row) && keys[event.row]) key = event.row;
@@ -206,8 +225,9 @@ async function start(ctx, kit, sdk) {
     ui.onClick('ADD_SPACE', () => edit((value) => value + ' '));
     ui.onClick('ERASE_CHARACTER', () => edit((value) => value.slice(0, -1)));
     ui.onClick('RENAME_NEXT', () => {
-        if (!inFront('EDIT') || !intent || intent.phase !== 'edit' || !validName(draft) || !can('rename')) return;
-        return confirm('rename', intent.id, draft, 'EDIT');
+        if (!inFront('EDIT') || !intent || intent.phase !== 'edit' || !validName(draft) || !can('rename', intent.id)) return;
+        return confirm({ action: 'rename', id: intent.id, value: draft },
+            'Rename active profile “' + intent.label + '” to “' + draft + '”?', 'EDIT');
     });
     ui.onClick('APPLY', async () => {
         if (!inFront('CONFIRM') || !intent || work.busy) return;
@@ -217,17 +237,16 @@ async function start(ctx, kit, sdk) {
             return;
         }
         const choice = intent;
-        if (choice.phase !== 'confirm' || !can(choice.action)) return;
+        if (choice.phase !== 'confirm' || !can(choice.action, choice.id)) return;
         choice.phase = 'running';
         const update = () => {
             if (intent === choice && choice.phase === 'running') ui.text('CONFIRM_TEXT', status(work));
         };
         const progress = setInterval(update, 350);
         try {
-            await work[choice.action](choice.id, choice.name);
+            await work[choice.action](choice.id, choice.value);
         } finally {
             clearInterval(progress);
-            if (work.state === 'confirmed' && work.detail.action === 'create') selectedId = work.detail.id;
             if (intent === choice) {
                 choice.phase = 'done';
                 await ui.text('CONFIRM_TEXT', status(work));
@@ -237,6 +256,7 @@ async function start(ctx, kit, sdk) {
         }
     });
     ui.onVisible((name, on) => {
+        if (on && name === 'MAIN') refreshPending = true;
         if (on) schedule();
         if (!on && name === 'CONFIRM' && intent && intent.phase === 'running') intent.revoked = true;
         if (!on && intent &&
@@ -248,14 +268,16 @@ async function start(ctx, kit, sdk) {
         }
     });
     ui.onFocus((name, on) => {
-        if (name === 'MAIN' && on) schedule();
+        if (name === 'MAIN' && on) {
+            refreshPending = true;
+            schedule();
+        }
         if (name === 'CONFIRM' && !on && intent && intent.phase === 'running') intent.revoked = true;
     });
     settings.onChange(schedule);
     link.on('available', (up) => {
         if (!up) {
             work.disconnected();
-            selectedId = null;
             if (settings.get('writes') === true) settings.set('writes', false);
         }
         refreshPending = true;
