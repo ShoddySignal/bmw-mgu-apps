@@ -19,6 +19,7 @@ class Workflow {
         this.generation = 0;
         this.identity = null;
         this.profiles = null;
+        this.extraAccountBytes = 0;
         this.active = null;
         this.pendingPiaId = typeof pendingPiaId === 'string' && pendingPiaId ? pendingPiaId : null;
         this.savePendingPia = savePendingPia;
@@ -42,6 +43,7 @@ class Workflow {
         this.generation++;
         this.identity = null;
         this.profiles = null;
+        this.extraAccountBytes = 0;
         this.active = null;
         this.stage('error', new DiagnosticError('offline'));
     }
@@ -70,13 +72,15 @@ class Workflow {
         return this.run(async (current) => {
             this.identity = null;
             this.profiles = null;
+            this.extraAccountBytes = 0;
             this.active = null;
             const identity = await this.diag.identify();
             current();
             this.identity = identity;
             if (!identity.isMgu) throw new DiagnosticError('variant');
-            const profiles = await this.readProfiles(current);
-            if (this.pendingPiaId && !profiles.some((p) => p.id === this.pendingPiaId && p.type !== 'guest')) {
+            const profiles = await this.readProfiles(current, { allowExtraData: true });
+            if (!this.extraAccountBytes && this.pendingPiaId &&
+                !profiles.some((p) => p.id === this.pendingPiaId && p.type !== 'guest')) {
                 this.setPendingPia(null);
                 throw new DiagnosticError('profileMissing');
             }
@@ -84,17 +88,18 @@ class Workflow {
         });
     }
 
-    async readProfiles(current) {
-        const profiles = await this.diag.accounts();
+    async readProfiles(current, options) {
+        const { profiles, extraBytes } = await this.diag.accounts(options);
         const active = await this.vehicle.activeAccount();
         current();
         this.profiles = profiles;
+        this.extraAccountBytes = extraBytes;
         this.active = active && profiles.some((p) => p.id === active.id) ? active : null;
         return profiles;
     }
 
     approved(action) {
-        if (!this.identity || !this.identity.isMgu) return false;
+        if (!this.identity || !this.identity.isMgu || this.extraAccountBytes) return false;
         const software = this.firmware();
         return !!software && this.verified.some((item) => item.index === this.identity.index &&
             item.version === software.version && item.variantId === software.variantId &&

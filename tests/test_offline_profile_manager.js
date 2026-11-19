@@ -100,17 +100,39 @@ async function harness(exchange, overrides = {}) {
 }
 
 test('PRG account format: fixed field order, UTF-8 names, empty slots and guest', () => {
-    assert.deepEqual(decodeAccounts(empty), [
+    assert.deepEqual(decodeAccounts(empty).profiles, [
         { id: user, name: 'Zoë', slot: 1, type: null },
         { id: guest, name: 'Guest', slot: null, type: 'guest' }
     ]);
-    assert.equal(decodeAccounts(full.slice(0, -1))[1].slot, 2);
-    assert.deepEqual(decodeAccounts([0, 0, 0, 0, 0, 0]), []);
+    assert.equal(decodeAccounts(full.slice(0, -1)).profiles[1].slot, 2);
+    assert.deepEqual(decodeAccounts([0, 0, 0, 0, 0, 0]), { profiles: [], extraBytes: 0 });
     assert.throws(() => decodeAccounts(empty.slice(0, 5)), { code: 'payload' });
     assert.deepEqual(decodeAccounts(empty.concat(0, 0, 0)), decodeAccounts(empty));
     assert.throws(() => decodeAccounts(empty.concat(0, 65)), { code: 'payload', reason: 'Extra data after guest ID' });
     assert.throws(() => decodeAccounts([65, 0, 0xc0, 0, 0, 0, 0, 0, 0]), { code: 'payload' });
     assert.throws(() => decodeAccounts(Array.from(Buffer.from('A\0x\0A\0y\0\0\0\0'))), { code: 'payload' });
+});
+
+test('Unknown E333 trailing data is accepted for display and rejected before writes', async () => {
+    const extended = full.concat(0xa5, 0x5a);
+    const h = await harness(() => listReply(extended));
+    assert.equal(await h.workflow.refresh(), true);
+    assert.deepEqual(h.workflow.profiles, decodeAccounts(full).profiles);
+    assert.equal(h.workflow.extraAccountBytes, 2);
+    assert.equal(h.workflow.approved('create'), false);
+    assert.equal(h.workflow.approved('login'), false);
+    assert.equal(h.workflow.approved('pia'), false);
+    assert.equal(await h.workflow.rename(user, 'Other Name'), false);
+    assert.equal(h.workflow.detail.code, 'firmware');
+    assert.deepEqual(h.signal.requests, [ident, list]);
+
+    let reads = 0;
+    const changed = await harness(() => listReply(++reads === 1 ? full : extended));
+    assert.equal(await changed.workflow.refresh(), true);
+    assert.equal(changed.workflow.approved('rename'), true);
+    assert.equal(await changed.workflow.rename(user, 'Other Name'), false);
+    assert.equal(changed.workflow.detail.reason, 'Extra data after guest ID');
+    assert.deepEqual(changed.signal.requests, [ident, list, list]);
 });
 
 test('Identity and RRR decode fail closed on partial or unknown values', () => {
@@ -432,7 +454,7 @@ test('UI starts without UDS, opens in read-only mode, and recovers after link lo
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
 
-test('Diagnostics identifies a malformed startup reply and recovers with a zero-padded profile list', async () => {
+test('Diagnostics identifies a malformed startup reply and displays a 55-byte profile reply with extra data', async () => {
     let visible = false, onVisible;
     const labels = {}, clicks = {};
     const ui = {
@@ -454,10 +476,12 @@ test('Diagnostics identifies a malformed startup reply and recovers with a zero-
     assert.equal(labels.STATUS, 'Unexpected reply to 22 E3 33. See Diagnostics.');
     assert.equal(labels.NRC, '22 E3 33 · 8 UDS bytes · Missing profile field separator');
 
-    accounts = empty.concat(0, 0);
+    const extraBytes = 55 - listReply(empty).length;
+    accounts = empty.concat(Array(extraBytes).fill(0xa5));
     await clicks.REFRESH();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
     assert.equal(labels.STATUS, 'Profiles refreshed.');
+    assert.equal(labels.NRC, '22 E3 33 · Skipped ' + extraBytes + ' bytes after guest ID.');
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
 

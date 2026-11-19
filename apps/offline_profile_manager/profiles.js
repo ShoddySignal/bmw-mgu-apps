@@ -22,7 +22,7 @@ function accountId(bytes) {
     return text(bytes, 'ascii');
 }
 
-function decodeAccounts(payload) {
+function decodeAccounts(payload, { allowExtraData = false } = {}) {
     // PERSONALISATION_ACCOUNT_IDS, 0xC6A68–0xC6FDB. Strip the echoed
     // DID first, then consume six NUL-terminated strings and the guest ID.
     let offset = 0;
@@ -45,10 +45,12 @@ function decodeAccounts(payload) {
     }
     const guestId = accountId(next(true));
     if (guestId) profiles.push({ id: guestId, name: 'Guest', slot: null, type: 'guest' });
-    // The PRG reads the guest ID as its final string. A zero-filled tail carries no additional fields.
-    if (payload.slice(offset).some((byte) => byte !== 0)) throw malformed('Extra data after guest ID');
+    // The PRG stops after reading the guest ID. Display only the known fields when a reply has a nonzero tail.
+    const tail = payload.slice(offset);
+    const extraBytes = tail.some((byte) => byte !== 0) ? tail.length : 0;
+    if (extraBytes && !allowExtraData) throw malformed('Extra data after guest ID');
     if (new Set(profiles.map((p) => p.id)).size !== profiles.length) throw malformed('Duplicate account IDs');
-    return profiles;
+    return { profiles, extraBytes };
 }
 
 function decodeCreationResult(payload) {

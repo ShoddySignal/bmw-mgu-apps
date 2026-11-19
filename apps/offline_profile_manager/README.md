@@ -1,6 +1,6 @@
 # Offline Profile Manager for BMW iDrive 7
 
-Version 0.1.0 is intended for read-only testing on a 2022 BMW X5 G05 with HU_MGU and MGU Store. It reads accounts when you open the app. Select **Refresh profiles** to read them again. No BMW ID, ConnectedDrive connection, Tool32 or ENET connection is required after installation.
+Version 0.1.1 is intended for read-only testing on a 2022 BMW X5 G05 with HU_MGU and MGU Store. It reads accounts when you open the app. Select **Refresh profiles** to read them again. No BMW ID, ConnectedDrive connection, Tool32 or ENET connection is required after installation.
 
 Profile creation, permanent PIA selection, account activation and renaming workflows have passed simulated tests. The firmware allowlist is empty, so the app runs in read-only mode. Installation and live profile reads still require on-car testing.
 
@@ -24,6 +24,8 @@ The app refreshes the profile list when you return to the main screen. If creati
 4. Select a different existing profile from the BMW menu. Reopen the app and refresh. Compare the **Active** indicator with the BMW menu. If the app reports **Activity unknown**, share the status and software version without names, full account IDs, VIN or raw frames.
 
 If the app reports an unexpected reply, **Diagnostics** shows the request identifier, UDS reply size and the reason the parser rejected it. Share that line with the SGBD index and software version.
+
+On `mgu-high` firmware `L18_22w18.3-1-6`, a 55-byte profile reply was observed with nonzero data after the guest ID. The app displays the decoded profiles and shows the number of skipped bytes in **Diagnostics**. Writes require a reply with a validated layout.
 
 | Operation | What to verify on the target unit |
 | --- | --- |

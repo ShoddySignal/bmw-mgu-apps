@@ -123,8 +123,12 @@ async function start(ctx, kit, sdk) {
         const profiles = work.profiles || [];
         const message = status(work);
         const error = work.state === 'error' && work.detail;
-        const diagnostic = error && error.code === 'payload' && error.request ?
-            error.request + ' · ' + error.replyLength + ' UDS bytes · ' + error.reason : message;
+        let diagnostic = message;
+        if (error && error.code === 'payload' && error.request) {
+            diagnostic = error.request + ' · ' + error.replyLength + ' UDS bytes · ' + error.reason;
+        } else if (work.state === 'ready' && work.extraAccountBytes) {
+            diagnostic = '22 E3 33 · Skipped ' + work.extraAccountBytes + ' bytes after guest ID.';
+        }
         const activeId = work.active && work.active.id;
         const pending = work.pendingPiaId;
         const firmwareReady = ['create', 'login', 'pia', 'rename'].some((action) => work.approved(action));

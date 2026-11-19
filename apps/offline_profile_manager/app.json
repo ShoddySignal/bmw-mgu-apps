@@ -2,7 +2,7 @@
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
   "description": "Read-only driver profile diagnostics for BMW iDrive 7 and HU_MGU.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
   "mguHmi": [
