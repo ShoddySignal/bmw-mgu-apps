@@ -84,12 +84,18 @@ function decodeIdentity(payload) {
     return { index, isMgu: index === '0F25B0' };
 }
 
-function createdProfile(before, after, reportedId) {
+function matchCreatedProfile(before, after, reportedId) {
     const ids = new Set(before.map((p) => p.id));
-    if (before.some((p) => !after.some((q) => q.id === p.id && q.type === p.type))) return null;
+    if (before.some((p) => !after.some((q) => q.id === p.id && q.type === p.type))) {
+        return { reason: 'An existing account disappeared or changed type' };
+    }
     const added = after.filter((p) => !ids.has(p.id));
-    if (added.length !== 1 || added[0].type === 'guest' || (reportedId && added[0].id !== reportedId)) return null;
-    return added[0];
+    if (added.length === 0) return { reason: 'No new account ID appeared in the list' };
+    if (added.length > 1) return { reason: added.length + ' new account IDs appeared in the list' };
+    const profile = added[0];
+    if (profile.type === 'guest') return { reason: 'The only new account is a guest' };
+    if (reportedId && profile.id !== reportedId) return { reason: 'The new account ID differs from the routine result' };
+    return { profile };
 }
 
-module.exports = { DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity, createdProfile };
+module.exports = { DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity, matchCreatedProfile };

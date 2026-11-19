@@ -2,7 +2,7 @@
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
   "description": "Driver profile management for BMW iDrive 7. Diagnostics tested on BMW X5 G05 with L18_22w18.3-1-6 (mgu-high).",
-  "version": "0.1.7",
+  "version": "0.1.10",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
   "mguHmi": [
@@ -102,119 +102,6 @@
       ]
     },
     {
-      "name": "EDIT",
-      "kind": "menu",
-      "title": "Rename profile",
-      "items": [
-        [
-          "text",
-          "CURRENT_PROFILE",
-          "Current profile"
-        ],
-        [
-          "text",
-          "DRAFT",
-          "New name"
-        ],
-        [
-          "dropdown",
-          "CHARACTER",
-          "Choose character",
-          [
-            "A",
-            "B",
-            "C",
-            "D",
-            "E",
-            "F",
-            "G",
-            "H",
-            "I",
-            "J",
-            "K",
-            "L",
-            "M",
-            "N",
-            "O",
-            "P",
-            "Q",
-            "R",
-            "S",
-            "T",
-            "U",
-            "V",
-            "W",
-            "X",
-            "Y",
-            "Z",
-            "a",
-            "b",
-            "c",
-            "d",
-            "e",
-            "f",
-            "g",
-            "h",
-            "i",
-            "j",
-            "k",
-            "l",
-            "m",
-            "n",
-            "o",
-            "p",
-            "q",
-            "r",
-            "s",
-            "t",
-            "u",
-            "v",
-            "w",
-            "x",
-            "y",
-            "z",
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            "9",
-            "-",
-            "_"
-          ]
-        ],
-        [
-          "button",
-          "ADD_CHARACTER",
-          "Add character"
-        ],
-        [
-          "button",
-          "ADD_SPACE",
-          "Add space"
-        ],
-        [
-          "button",
-          "ERASE_CHARACTER",
-          "Delete last character"
-        ],
-        [
-          "button",
-          "RENAME_NEXT",
-          "Continue"
-        ],
-        [
-          "button",
-          "CANCEL_EDIT",
-          "Cancel"
-        ]
-      ]
-    },
-    {
       "name": "DETAILS",
       "kind": "menu",
       "title": "HU_MGU diagnostics",
@@ -266,7 +153,7 @@
       "kind": "menu",
       "title": "Account details",
       "items": [
-        ["text3", "ACCOUNT_MATCHES"],
+        ["text3", "ACCOUNT_MATCHES", "Reading profile details…"],
         ["text3", "SYSTEM_ACCOUNT_NAME"],
         ["text3", "SYSTEM_ACCOUNT_ID"],
         ["text3", "SESSION_REFERENCE"],

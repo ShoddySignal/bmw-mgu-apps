@@ -1,6 +1,7 @@
 'use strict';
 
-const { ProfileDiag, validName, NAME_MAX } = require('./diag');
+const { ProfileDiag, validName } = require('./diag');
+const { enterProfileName } = require('./speller');
 const { Workflow } = require('./workflow');
 const { Vehicle, monotonicMs } = require('./vehicle');
 
@@ -25,13 +26,13 @@ const ERRORS = {
     capacity: 'All three slots are in use.',
     createFailed: 'ECU reported that profile creation failed.',
     createPending: 'ECU has yet to confirm creation. Refresh profiles.',
-    createMissing: 'ECU reported completion. A unique new profile could not be identified.',
+    createMissing: 'ECU reported success. Refresh profiles and check the list in iDrive.',
     profileMissing: 'The profile is missing from the list.',
     active: 'Active account could not be verified. Select the profile from the BMW menu.',
     slotChanged: 'The profile slot changed. Open Finish profile setup and confirm again.',
     piaPending: 'Choose Finish profile setup to continue.',
     id: 'The profile ID has an unexpected format for activation.',
-    name: 'Enter a name using up to 24 ASCII characters.',
+    name: 'Use up to 24 letters (A–Z), digits, spaces, hyphens or underscores.',
     renameMissing: 'ECU accepted the request. The new name is awaiting confirmation.'
 };
 const CONFIRMED = {
@@ -124,10 +125,9 @@ async function start(ctx, kit, sdk) {
     link.busyLog = false;
     const diag = new ProfileDiag(link, kit.replyTo);
     const inFront = (name) => ui.isVisible(name) && ui.hasFocus(name);
-    let intent = null, draft = '', key = 0;
+    let intent = null, renameNotice = null;
     let refreshPending = true, renderQueued = false, rendering = false;
     let accountDetailsShown = false;
-    const keys = ctx.spec.screens.find((s) => s.name === 'EDIT').items.find((i) => i[1] === 'CHARACTER')[3];
     const work = new Workflow(diag, vehicle, {
         visible: () => inFront('CONFIRM') && intent && intent.phase === 'running' && !intent.revoked,
         changed: schedule,
@@ -142,6 +142,7 @@ async function start(ctx, kit, sdk) {
     }
 
     function can(action, id) {
+        if (intent && intent.phase === 'speller') return false;
         if ((refreshPending && inFront('MAIN')) || work.busy || !link.available || !work.profiles) return false;
         if (action === 'create') return !work.pendingPiaId && work.profiles.filter((p) => p.type !== 'guest').length < 3;
         const profile = driverProfile(id);
@@ -166,25 +167,24 @@ async function start(ctx, kit, sdk) {
         accountDetailsShown = show;
         const matches = work.accountMatches;
         const rows = [
+            ['ACCOUNT_MATCHES', work.busy ? 'Reading profile details…' : matches ?
+                'Matches · ID/reference ' + matches.ids + ' · Exact name ' +
+                (matches.names === null ? 'Unavailable' : matches.names) : 'Matches · Unavailable'],
             ['SYSTEM_ACCOUNT_ID', accountValue('UserAccount.id', systemAccount && systemAccount.id)],
             ['SESSION_REFERENCE', accountValue('SessionManager reference', systemAccount && systemAccount.reference)],
-            ['SYSTEM_ACCOUNT_NAME', accountValue('UserAccount.name', systemAccount && systemAccount.rawName)],
-            ['ACCOUNT_MATCHES', matches ? 'Matches · ID/reference ' + matches.ids + ' · Exact name ' +
-                (matches.names === null ? 'Unavailable' : matches.names) : 'Matches · Unavailable'],
-            ...ACCOUNT_ID_ROWS.map(([component, label, slot]) => {
-                const profile = profiles && profiles.find((entry) => entry.slot === slot);
-                return [component, accountValue(label, profile && profile.id, profiles ? 'Empty' : 'Unavailable')];
-            }),
-            ...[1, 2, 3].flatMap((slot) => {
-                const field = work.accountNames[slot - 1];
-                const label = 'E333 slot ' + slot + ' name';
-                return [
-                    ['SLOT_' + slot + '_NAME', accountValue(label, field && field.name,
-                        field && field.issue)],
-                    ['SLOT_' + slot + '_NAME_HEX', nameHex(label + ' HEX', field)]
-                ];
-            })
+            ['SYSTEM_ACCOUNT_NAME', accountValue('UserAccount.name', systemAccount && systemAccount.rawName)]
         ];
+        for (const [component, label, slot] of ACCOUNT_ID_ROWS) {
+            const profile = profiles && profiles.find((entry) => entry.slot === slot);
+            rows.push([component, accountValue(label, profile && profile.id, profiles ? 'Empty' : 'Unavailable')]);
+            if (slot === null) continue;
+            const field = work.accountNames[slot - 1];
+            const nameLabel = label + ' name';
+            rows.push(
+                ['SLOT_' + slot + '_NAME', accountValue(nameLabel, field && field.name, field && field.issue)],
+                ['SLOT_' + slot + '_NAME_HEX', nameHex(nameLabel + ' HEX', field)]
+            );
+        }
         return Promise.all(rows.map(([component, value]) => ui.text(component, show ? value : '')));
     }
 
@@ -206,6 +206,7 @@ async function start(ctx, kit, sdk) {
         if (work.state === 'ready' && !profiles.length) listMessage = 'No profiles found.';
         else if ((work.state === 'ready' || work.state === 'activationUnverified') && !activeId && !pending &&
             systemAccount && systemAccount.name) listMessage = 'Active in iDrive · ' + profileLabel(systemAccount.name);
+        if (renameNotice && !work.busy && link.available) listMessage = renameNotice;
         const rows = PROFILE_ROWS.map((name, i) => {
             const profile = profiles[i];
             if (!profile) return ui.visible(name, false);
@@ -238,8 +239,6 @@ async function start(ctx, kit, sdk) {
                 ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
                 ui.text('NRC', diagnostic(work, message)),
                 renderAccountDetails(systemAccount, work.profiles),
-                ui.text('DRAFT', 'New name · ' + (draft || '—')),
-                ui.enabled('RENAME_NEXT', !!intent && !intent.revoked && validName(draft) && !!can('rename', intent.id)),
                 ui.enabled('APPLY', !work.busy && !!intent && (intent.phase === 'done' ||
                     (intent.phase === 'confirm' && !intent.revoked && !!can(intent.action, intent.id)))),
                 ui.visible('CANCEL_CONFIRM', !!intent && intent.phase === 'confirm'),
@@ -251,19 +250,12 @@ async function start(ctx, kit, sdk) {
         }
     }
 
-    function confirm(choice, message, from) {
+    function confirm(choice, message) {
         const current = { ...choice, phase: 'confirm' };
         intent = current;
-        return Promise.resolve(from && ui.close(from)).then(() => ui.text('CONFIRM_TEXT', message)).then(() => {
+        return ui.text('CONFIRM_TEXT', message).then(() => {
             if (intent === current) return ui.open('CONFIRM');
         }).then(schedule);
-    }
-
-    function cancel(screen, phase) {
-        if (!inFront(screen) || !intent || intent.phase !== phase) return;
-        intent = null;
-        draft = '';
-        return ui.close(screen);
     }
 
     PROFILE_ROWS.forEach((name, i) => ui.onClick(name, () => {
@@ -274,6 +266,7 @@ async function start(ctx, kit, sdk) {
     }));
     ui.onClick('REFRESH', () => {
         if (!inFront('MAIN') || !link.available || work.busy) return;
+        renameNotice = null;
         refreshPending = false;
         return work.refresh();
     });
@@ -281,8 +274,11 @@ async function start(ctx, kit, sdk) {
     ui.onClick('DETAILS_BACK', () => { if (inFront('DETAILS')) return ui.close('DETAILS'); });
     ui.onClick('SHOW_ACCOUNT_IDS', () => { if (inFront('DETAILS')) return ui.open('ACCOUNT_IDS'); });
     ui.onClick('ACCOUNT_IDS_BACK', () => { if (inFront('ACCOUNT_IDS')) return ui.close('ACCOUNT_IDS'); });
-    ui.onClick('CANCEL_CONFIRM', () => cancel('CONFIRM', 'confirm'));
-    ui.onClick('CANCEL_EDIT', () => cancel('EDIT', 'edit'));
+    ui.onClick('CANCEL_CONFIRM', () => {
+        if (!inFront('CONFIRM') || !intent || intent.phase !== 'confirm') return;
+        intent = null;
+        return ui.close('CONFIRM');
+    });
     ui.onClick('CREATE', () => {
         if (!inFront('MAIN')) return;
         const pending = driverProfile(work.pendingPiaId);
@@ -293,32 +289,30 @@ async function start(ctx, kit, sdk) {
         if (!can('create')) return;
         return confirm({ action: 'create' }, 'Create a local profile? This may affect BMW ID and Digital Key. Keep your physical key with you.');
     });
-    ui.onClick('RENAME', () => {
+    ui.onClick('RENAME', async () => {
         const profile = driverProfile(work.active && work.active.id);
         if (!inFront('MAIN') || !profile || !can('rename', profile.id)) return;
-        const label = profileLabel(profile.name);
-        intent = { action: 'rename', id: profile.id, label, account: work.systemAccount, phase: 'edit' };
-        draft = '';
-        key = 0;
+        const choice = { action: 'rename', id: profile.id, account: work.systemAccount, phase: 'speller' };
+        intent = choice;
+        renameNotice = null;
         schedule();
-        return Promise.all([ui.selected('CHARACTER', key), ui.text('CURRENT_PROFILE', 'Current profile · ' + label)])
-            .then(() => ui.open('EDIT'));
-    });
-    ui.onClick('CHARACTER', (event) => {
-        if (inFront('EDIT') && Number.isInteger(event.row) && keys[event.row]) key = event.row;
-    });
-    function edit(change) {
-        if (!inFront('EDIT') || !intent || intent.phase !== 'edit') return;
-        draft = change(draft).slice(0, NAME_MAX);
-        schedule();
-    }
-    ui.onClick('ADD_CHARACTER', () => edit((value) => value + keys[key]));
-    ui.onClick('ADD_SPACE', () => edit((value) => value + ' '));
-    ui.onClick('ERASE_CHARACTER', () => edit((value) => value.slice(0, -1)));
-    ui.onClick('RENAME_NEXT', () => {
-        if (!inFront('EDIT') || !intent || intent.phase !== 'edit' || intent.revoked || !validName(draft) || !can('rename', intent.id)) return;
-        return confirm({ action: 'rename', id: intent.id, value: draft, account: intent.account },
-            'Rename active profile “' + intent.label + '” to “' + draft + '”?', 'EDIT');
+        try {
+            const value = await enterProfileName(ctx.app);
+            if (intent !== choice || choice.revoked || value === null) return;
+            if (!vehicle.isCurrentAccount(choice.account)) {
+                renameNotice = ERRORS.active;
+            } else if (!validName(value)) {
+                renameNotice = ERRORS.name;
+            } else {
+                return confirm({ ...choice, value },
+                    'Rename active profile “' + profileLabel(profile.name) + '” to “' + value + '”?');
+            }
+        } catch (error) {
+            if (intent === choice && !choice.revoked) renameNotice = 'iDrive text input is unavailable.';
+        } finally {
+            if (intent === choice) intent = null;
+            schedule();
+        }
     });
     ui.onClick('APPLY', async () => {
         if (!inFront('CONFIRM') || !intent || work.busy) return;
@@ -342,7 +336,6 @@ async function start(ctx, kit, sdk) {
                 choice.phase = 'done';
                 await ui.text('CONFIRM_TEXT', status(work));
             }
-            draft = '';
             schedule();
         }
     });
@@ -350,11 +343,8 @@ async function start(ctx, kit, sdk) {
         if (on && (name === 'MAIN' || name === 'ACCOUNT_IDS')) refreshPending = true;
         if (on || name === 'ACCOUNT_IDS') schedule();
         if (!on && name === 'CONFIRM' && intent && intent.phase === 'running') intent.revoked = true;
-        if (!on && intent &&
-            ((name === 'EDIT' && intent.phase === 'edit') ||
-             (name === 'CONFIRM' && (intent.phase === 'confirm' || intent.phase === 'done')))) {
+        if (!on && name === 'CONFIRM' && intent && (intent.phase === 'confirm' || intent.phase === 'done')) {
             intent = null;
-            draft = '';
         }
     });
     ui.onFocus((name, on) => {

@@ -1,9 +1,11 @@
 'use strict';
 
-const { DiagnosticError, createdProfile } = require('./profiles');
+const { DiagnosticError, matchCreatedProfile } = require('./profiles');
 const { loginRequest, validName } = require('./diag');
 const ACTIVATION_CONFIRMATION_MS = 8000;
 const ACTIVATION_POLL_MS = 500;
+const CREATION_LIST_CONFIRMATION_MS = 8000;
+const CREATION_LIST_POLL_MS = 500;
 
 function matchingProfiles(profiles, account) {
     const byId = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
@@ -186,14 +188,23 @@ class Workflow {
                 throw error;
             }
 
-            let created = null;
-            for (let attempt = 0; attempt < 3; attempt++) {
+            const listDeadline = this.now() + CREATION_LIST_CONFIRMATION_MS;
+            let match;
+            do {
+                current();
                 const after = await this.readProfiles(current);
-                created = createdProfile(before, after, result.id);
-                if (created) break;
-                if (attempt < 2) await this.wait(450);
+                match = matchCreatedProfile(before, after, result.id);
+                if (match.profile) break;
+                const remaining = listDeadline - this.now();
+                if (remaining <= 0) break;
+                await this.wait(Math.min(remaining, CREATION_LIST_POLL_MS));
+            } while (this.now() < listDeadline);
+            if (!match.profile) {
+                throw Object.assign(new DiagnosticError('createMissing'), {
+                    request: '22 E3 33', reason: 'Creation result 0x02 · ' + match.reason
+                });
             }
-            if (!created) throw new DiagnosticError('createMissing');
+            const created = match.profile;
             this.created.add(created.id);
             this.setPendingPia(created.id);
             await this.completePia(created, current);

@@ -2,7 +2,7 @@
 
 Diagnostics were tested on a 2022 BMW X5 G05 with HU_MGU, software version `L18_22w18.3-1-6`, variant `mgu-high` and SGBD index `0F25B0`. The app reads accounts when you open it. Select **Refresh profiles** to read them again. No BMW ID, ConnectedDrive connection, Tool32 or ENET connection is required after installation.
 
-Create, activate and rename profiles from the main screen. Each action asks for confirmation and checks that the vehicle is stationary in P before sending a write. Choose **Cancel** to leave a confirmation or discard a draft name. The list marks the current profile as **Active** and refreshes when iDrive reports a profile change.
+Create, activate and rename profiles from the main screen. Each action asks for confirmation and checks that the vehicle is stationary in P before sending a write. Choose **Cancel** to leave a confirmation. The list marks the current profile as **Active** and refreshes when iDrive reports a profile change.
 
 ## Installation
 
@@ -12,9 +12,11 @@ Follow the [GitHub installation instructions](../../README.md#install-through-mg
 
 1. With the vehicle in P, choose **Create offline profile** and confirm. The app verifies the new account and applies permanent PIA mode to its slot. The confirmation screen shows the new profile's name.
 2. Select the profile in **CAR → Driver Profiles** in iDrive or select its row in the app and confirm activation.
-3. Choose **Rename active profile**. The app shows the current profile name and checks the active account again before writing the new name.
+3. Choose **Rename active profile** to open the iDrive text entry screen. Enter a name of up to 24 ASCII characters using the controller, then select **OK**. Use iDrive **Back** to cancel input. After **OK**, the app shows the old and new names for confirmation and checks the active account again before writing.
 
 The app refreshes the profile list when you return to the main screen. If creation succeeds and permanent PIA setup is interrupted, choose **Finish profile setup** to continue with the saved account.
+
+After the ECU reports creation success, the app polls the profile list for up to eight seconds. If it still cannot identify exactly one new driver profile, **Diagnostics** shows why. Use **Refresh profiles** or check **CAR → Driver Profiles** to see whether the profile appeared.
 
 ## Validate on the vehicle
 

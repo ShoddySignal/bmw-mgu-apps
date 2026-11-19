@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { createRequire } = require('node:module');
+const { runInNewContext } = require('node:vm');
 const kit = require('../kit/runtime/diag');
 const { ProfileDiag, decodeReply, loginRequest, renameRequest, piaRequest } = require('../apps/offline_profile_manager/diag');
 const { decodeAccounts, decodeCreationResult, decodeIdentity } = require('../apps/offline_profile_manager/profiles');
@@ -177,8 +180,25 @@ test('Creates precisely one new account after RRR and list verification', async 
     assert.ok(h.messages.every((line) => !line.includes(user) && !line.includes(added)));
 });
 
+test('Creation waits for a delayed account list update after the ECU reports success', async () => {
+    let reads = 0;
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) return listReply(++reads <= 7 ? empty : full);
+        if (bytes[2] === 0x02) return permanentReply;
+        if (bytes[1] === 3) return routineReply(2, added);
+        return [0x71, 1, 0xa1, 0x9a];
+    });
+    await h.workflow.refresh();
+    assert.equal(await h.workflow.create(), true);
+    assert.equal(h.workflow.detail.id, added);
+    assert.deepEqual(h.signal.requests, [ident, list, list, create, result, ...Array(6).fill(list), permanent]);
+});
+
 test('Creation is unconfirmed if the ECU finishes but the new ID is missing or mismatched', async () => {
-    for (const response of [empty, full]) {
+    for (const [response, reason] of [
+        [empty, 'No new account ID appeared in the list'],
+        [full, 'The new account ID differs from the routine result']
+    ]) {
         let reading = 0;
         const h = await harness((bytes) => {
             if (bytes[0] === 0x22) return listReply(reading++ < 2 ? empty : response);
@@ -187,6 +207,9 @@ test('Creation is unconfirmed if the ECU finishes but the new ID is missing or m
         await h.workflow.refresh();
         assert.equal(await h.workflow.create(), false);
         assert.equal(h.workflow.detail.code, 'createMissing');
+        assert.equal(h.workflow.detail.request, '22 E3 33');
+        assert.equal(h.workflow.detail.reason, 'Creation result 0x02 · ' + reason);
+        assert.equal(h.workflow.detail.afterAcceptance, true);
         assert.equal(h.workflow.pendingPiaId, null);
         assert.equal(h.signal.requests.filter((b) => b[0] === 0x31 && b[1] === 1).length, 1);
         assert.equal(h.signal.requests.some((b) => b[0] === 0x2e), false);
@@ -610,7 +633,12 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
 
-test('UI follows the active account, retains a failure and can discard a draft name', async () => {
+test('UI renders account details without Array.flatMap and still supports profile actions', async () => {
+    const uiPath = require.resolve('../apps/offline_profile_manager/ui');
+    const appModule = { exports: {} };
+    runInNewContext('delete Array.prototype.flatMap;\n' + readFileSync(uiPath, 'utf8'), {
+        module: appModule, require: createRequire(uiPath), Buffer, setImmediate, setInterval, clearInterval
+    }, { filename: uiPath });
     const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
     let activeId = user, userName = 'Zoë', denyActivation = true, sessionChanged;
     let reference = 'current', diagnosticNameBytes, systemName;
@@ -682,8 +710,31 @@ test('UI follows the active account, retains a failure and can discard a draft n
         get: (key) => values[key],
         set: (key, value) => { values[key] = value; }
     };
+    let spellerNotify, spellerStarts = 0, failSpeller = false;
+    const spellerProxy = {
+        init: async () => {}, waitUntilAvailable: async () => {},
+        interactionState: { getValue: async () => 'READY' },
+        notify: {
+            subscribe: async (listener) => { spellerNotify = listener; return 1; },
+            unsubscribe: async (id) => { assert.equal(id, 1); spellerNotify = null; }
+        },
+        start: async ({ token, startParameters }) => {
+            assert.equal(token, 'text-token');
+            assert.equal(startParameters.get(4), 'New profile name');
+            spellerStarts++;
+        }
+    };
+    const app = {
+        async getUseCaseFactory() {
+            if (failSpeller) throw new Error('Text input unavailable');
+            return { create: async (id) => {
+                assert.equal(id, '02076b22-d19b-4aef-9e8c-0d7305d8b88c');
+                return { token: 'text-token', proxy: spellerProxy };
+            } };
+        }
+    };
     const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(setImmediate); };
-    await start({ ui, settings, signals, spec }, kit,
+    await appModule.exports.start({ app, ui, settings, signals, spec }, kit,
         { config: { get: () => '1' }, runtimeVariant: { getSoftwareVersion: () => software } });
     enter('MAIN');
     await settle();
@@ -785,18 +836,44 @@ test('UI follows the active account, retains a failure and can discard a draft n
     await clicks.DETAILS_BACK();
     await settle();
     assert.equal(screen, 'MAIN');
+
+    failSpeller = true;
     await clicks.RENAME();
-    assert.equal(labels.CURRENT_PROFILE, 'Current profile · Zoë');
-    clicks.ADD_CHARACTER();
-    await clicks.CANCEL_EDIT();
+    await settle();
+    assert.equal(labels.STATUS, 'iDrive text input is unavailable.');
+    assert.equal(screen, 'MAIN');
+    failSpeller = false;
+
+    let enteringName = clicks.RENAME();
+    await settle();
+    assert.equal(spellerStarts, 1);
+    await clicks.RENAME();
+    assert.equal(spellerStarts, 1);
+    spellerNotify({ interactionState: 'ABORTED' });
+    await enteringName;
     await settle();
     assert.equal(screen, 'MAIN');
-    await clicks.RENAME();
+    assert.equal(spellerNotify, null);
+
+    enteringName = clicks.RENAME();
     await settle();
-    assert.equal(labels.DRAFT, 'New name · —');
-    clicks.ADD_CHARACTER();
-    await clicks.RENAME_NEXT();
+    spellerNotify({ interactionParameters: new Map([[102, 'БМВ'], [105, true]]) });
+    await enteringName;
+    await settle();
+    assert.equal(screen, 'MAIN');
+    assert.equal(labels.STATUS, 'Use up to 24 letters (A–Z), digits, spaces, hyphens or underscores.');
+
+    enteringName = clicks.RENAME();
+    await settle();
+    enter(null); // The native input screen temporarily covers the app.
+    spellerNotify({ interactionParameters: new Map([[102, 'A']]) });
+    assert.equal(screen, null);
+    enter('MAIN');
+    spellerNotify({ interactionParameters: new Map([[105, true]]) });
+    await enteringName;
+    assert.equal(screen, 'CONFIRM');
     assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “Zoë” to “A”?');
+    assert.ok(!signals.requests.some((bytes) => bytes[0] === 0x2e && bytes[2] === 0x35));
     await clicks.APPLY();
     assert.equal(labels.CONFIRM_TEXT, 'New name confirmed.');
     assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), loginRequest(added), renameRequest('A')]);
