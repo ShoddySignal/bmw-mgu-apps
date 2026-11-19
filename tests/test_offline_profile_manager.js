@@ -233,15 +233,17 @@ test('Activation can match a distinct system ID by exact reference, and rejects 
     assert.equal(h.workflow.systemAccount.id, 'SYSTEM002');
 
     h.state.active = user; // The system ID and reference now point to different rows.
+    h.state.name = 'TEST_NAME';
     await h.workflow.refresh();
     assert.equal(h.workflow.active, null);
     assert.equal(await h.workflow.rename(added, 'New Name'), false);
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added)]);
 });
 
-test('ECU acceptance is reported when the system account has a name but no matching identifier', async () => {
+test('Duplicate names leave ECU acceptance without identifying a profile', async () => {
+    const duplicates = Array.from(Buffer.from([user, 'TEST_NAME', added, 'TEST_NAME', '', '', guest].join('\0') + '\0'));
     const h = await harness((bytes) => {
-        if (bytes[0] === 0x22) return listReply(full);
+        if (bytes[0] === 0x22) return listReply(duplicates);
         h.state.active = 'SYSTEM002';
         h.state.reference = 'ACCOUNT002';
         h.state.name = 'TEST_NAME';
@@ -250,13 +252,49 @@ test('ECU acceptance is reported when the system account has a name but no match
     await h.workflow.refresh();
     assert.equal(await h.workflow.login(added), true);
     assert.equal(h.workflow.state, 'activationUnverified');
-    assert.equal(h.workflow.lastIssue.reason, 'System account has no unique match in the profile list');
+    assert.equal(h.workflow.lastIssue.reason, 'No unique profile match');
     assert.equal(h.workflow.active, null);
     assert.equal(h.workflow.systemAccount.name, 'TEST_NAME');
     await h.workflow.refresh();
     assert.equal(h.workflow.lastIssue.code, 'activationUnverified');
     assert.equal(await h.workflow.rename(added, 'New Name'), false);
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added)]);
+});
+
+test('A unique system name identifies the active row and rename checks the same system account', async () => {
+    let profileName = 'TEST_NAME';
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) {
+            return listReply(Array.from(Buffer.from([user, 'Zoë', added, profileName, '', '', guest].join('\0') + '\0')));
+        }
+        if (bytes[2] === 0x34) {
+            h.state.active = 'SYSTEM002';
+            h.state.reference = 'ACCOUNT002';
+            h.state.name = 'TEST_NAME';
+            return [0x6e, 0xe3, 0x34];
+        }
+        profileName = 'New Name';
+        return [0x6e, 0xe3, 0x35];
+    });
+    await h.workflow.refresh();
+    assert.equal(await h.workflow.login(added), true);
+    assert.equal(h.workflow.state, 'confirmed');
+    assert.equal(h.workflow.active.id, added);
+    assert.equal(h.workflow.active.matchedByName, true);
+    const expected = h.workflow.systemAccount;
+    h.state.reference = 'OTHER_ACCOUNT';
+    assert.equal(await h.workflow.rename(added, 'New Name', expected), false);
+    assert.equal(h.workflow.detail.code, 'active');
+    h.state.reference = expected.reference;
+    h.signal.beforeCall = (sid) => { if (sid === 0x2e) h.state.active = 'OTHER_SYSTEM'; };
+    assert.equal(await h.workflow.rename(added, 'New Name', expected), false);
+    assert.equal(h.workflow.detail.code, 'active');
+
+    h.state.active = expected.id;
+    h.signal.beforeCall = null;
+    assert.equal(await h.workflow.rename(added, 'New Name', expected), true);
+    assert.equal(h.workflow.profiles.find((p) => p.id === added).name, 'New Name');
+    assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), renameRequest('New Name')]);
 });
 
 test('Creates a profile, sets PIA, and renames it with extended account replies', async () => {
@@ -665,10 +703,10 @@ test('UI follows the active account, retains a failure and can discard a draft n
     activeId = 'UNKNOWN';
     sessionChanged();
     await settle();
-    assert.equal(labels.STATUS, 'Active in iDrive · TEST_NAME');
-    assert.equal(labels.ACTIVE, 'Active account · System identifiers do not match a unique profile');
-    assert.equal(labels.PROFILE_1, 'TEST_NAME');
-    assert.equal(enabled.RENAME, false);
+    assert.equal(labels.ACTIVE, 'Active account · Matched by name');
+    assert.equal(labels.PROFILE_1, 'Active · TEST_NAME');
+    assert.equal(enabled.PROFILE_1, false);
+    assert.equal(enabled.RENAME, true);
 
     activeId = user; // The driver switched profiles in the stock UI.
     sessionChanged();

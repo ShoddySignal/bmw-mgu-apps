@@ -7,8 +7,16 @@ const ACTIVATION_POLL_MS = 500;
 
 function matchActiveProfile(profiles, account) {
     if (!account) return null;
-    const matches = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
-    return matches.length === 1 ? { ...account, id: matches[0].id } : null;
+    const byId = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
+    if (byId.length) return byId.length === 1 ? { ...account, id: byId[0].id } : null;
+    if (!account.name || account.type === 'guest') return null;
+    const byName = profiles.filter((profile) => profile.name === account.name);
+    return byName.length === 1 && byName[0].type !== 'guest' ?
+        { ...account, id: byName[0].id, matchedByName: true } : null;
+}
+
+function sameSessionAccount(before, after) {
+    return before && after && before.id === after.id && before.reference === after.reference && before.epoch === after.epoch;
 }
 
 class Workflow {
@@ -222,16 +230,18 @@ class Workflow {
                 return;
             }
             const reason = this.active ? 'A different profile is still active' : this.systemAccount ?
-                'System account has no unique match in the profile list' : this.vehicle.activeIssue || 'Active account unavailable';
+                'No unique profile match' : this.vehicle.activeIssue || 'Active account unavailable';
             this.stage('activationUnverified', { code: 'activationUnverified', id, request: '2E E3 34', reason });
         });
     }
 
-    rename(id, name) {
+    rename(id, name, expectedAccount = this.systemAccount) {
         return this.profileAction('rename', id, async (account, current) => {
             if (!validName(name)) throw new DiagnosticError('name');
-            const active = this.active;
-            if (!active || active.id !== account.id) throw new DiagnosticError('active');
+            const active = this.systemAccount;
+            if (!this.active || this.active.id !== account.id || !sameSessionAccount(expectedAccount, active)) {
+                throw new DiagnosticError('active');
+            }
             this.profiles = null;
             this.active = null;
             this.systemAccount = null;
@@ -239,7 +249,9 @@ class Workflow {
             current();
             this.stage('accepted');
             const after = await this.readProfiles(current);
-            if (!this.active || this.active.id !== account.id) throw new DiagnosticError('active');
+            if (!sameSessionAccount(active, this.systemAccount) || (this.active && this.active.id !== account.id)) {
+                throw new DiagnosticError('active');
+            }
             if (!after.some((p) => p.id === account.id && p.name === name)) throw new DiagnosticError('renameMissing');
             this.stage('confirmed', { action: 'rename', id: account.id });
         });

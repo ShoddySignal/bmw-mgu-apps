@@ -2,7 +2,7 @@
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
   "description": "Driver profile management for BMW iDrive 7. Diagnostics tested on BMW X5 G05 with L18_22w18.3-1-6 (mgu-high).",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
   "mguHmi": [

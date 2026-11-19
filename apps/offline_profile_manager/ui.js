@@ -148,7 +148,7 @@ async function start(ctx, kit, sdk) {
         const systemAccount = vehicle.isCurrentAccount(work.systemAccount) ? work.systemAccount : null;
         const parkingIssue = vehicle.parkingIssue();
         const activeIssue = !work.profiles ? 'Profile list unavailable' : systemAccount ?
-            'System identifiers do not match a unique profile' : vehicle.activeIssue || 'Checking system account';
+            'No unique profile match' : vehicle.activeIssue || 'Checking system account';
         const pending = work.pendingPiaId;
         let listMessage = message;
         if (work.state === 'ready' && !profiles.length) listMessage = 'No profiles found.';
@@ -161,8 +161,8 @@ async function start(ctx, kit, sdk) {
             const isActive = profile.id === activeId;
             const activity = activate ? 'Select to activate' : activeId ? 'Inactive' : 'Activity unknown';
             const type = TYPES[profile.type || (work.created.has(profile.id) ? 'local' : null) ||
-                (isActive ? work.active.type : null)] || 'Unknown type';
-            const position = profile.slot ? 'Slot ' + profile.slot + ' · ' + type : type;
+                (isActive ? work.active.type : null)];
+            const position = profile.slot ? 'Slot ' + profile.slot + (type ? ' · ' + type : '') : type;
             return Promise.all([
                 ui.cells(name, 0, {
                     Text1stRow: (isActive ? 'Active · ' : '') + profileLabel(profile.name),
@@ -181,7 +181,8 @@ async function start(ctx, kit, sdk) {
                 ui.text('ID_INDEX', 'SGBD index · ' + (work.identity ? work.identity.index : 'Unavailable')),
                 ui.text('ID_VERSION', 'Software version · ' + (software ? software.version : 'Unavailable')),
                 ui.text('ID_VARIANT', 'Software variant · ' + (software ? software.variantId : 'Unavailable')),
-                ui.text('ACTIVE', 'Active account · ' + (activeId ? 'Verified' : activeIssue)),
+                ui.text('ACTIVE', 'Active account · ' + (activeId ?
+                    (work.active.matchedByName ? 'Matched by name' : 'Verified') : activeIssue)),
                 ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
                 ui.text('NRC', diagnostic(work, message)),
                 ui.text('DRAFT', 'New name · ' + (draft || '—')),
@@ -241,7 +242,7 @@ async function start(ctx, kit, sdk) {
         const profile = driverProfile(work.active && work.active.id);
         if (!inFront('MAIN') || !profile || !can('rename', profile.id)) return;
         const label = profileLabel(profile.name);
-        intent = { action: 'rename', id: profile.id, label, phase: 'edit' };
+        intent = { action: 'rename', id: profile.id, label, account: work.systemAccount, phase: 'edit' };
         draft = '';
         key = 0;
         schedule();
@@ -261,7 +262,7 @@ async function start(ctx, kit, sdk) {
     ui.onClick('ERASE_CHARACTER', () => edit((value) => value.slice(0, -1)));
     ui.onClick('RENAME_NEXT', () => {
         if (!inFront('EDIT') || !intent || intent.phase !== 'edit' || intent.revoked || !validName(draft) || !can('rename', intent.id)) return;
-        return confirm({ action: 'rename', id: intent.id, value: draft },
+        return confirm({ action: 'rename', id: intent.id, value: draft, account: intent.account },
             'Rename active profile “' + intent.label + '” to “' + draft + '”?', 'EDIT');
     });
     ui.onClick('APPLY', async () => {
@@ -279,7 +280,7 @@ async function start(ctx, kit, sdk) {
         };
         const progress = setInterval(update, 350);
         try {
-            await work[choice.action](choice.id, choice.value);
+            await work[choice.action](choice.id, choice.value, choice.account);
         } finally {
             clearInterval(progress);
             if (intent === choice) {
