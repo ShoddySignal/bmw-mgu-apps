@@ -86,7 +86,9 @@ async function harness(exchange, overrides = {}) {
     const vehicle = {
         parkingIssue: () => !state.speedKnown ? 'Speed sample missing or stale' :
             state.parked ? null : 'A selector signal reports a position other than P',
-        activeAccount: async () => state.active ? { id: state.active, reference: state.reference, name: state.name } : null,
+        activeAccount: async () => state.active ? {
+            id: state.active, reference: state.reference, name: state.name, type: state.type
+        } : null,
         stillActive: (x) => x.id === state.active
     };
     let time = 0;
@@ -275,6 +277,47 @@ test('Activation can match a distinct system ID by exact reference, and rejects 
     assert.equal(h.workflow.active, null);
     assert.equal(await h.workflow.rename(added, 'New Name'), false);
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added)]);
+});
+
+test('Matches G05 SessionManager instances to padded E333 IDs despite duplicate names', async () => {
+    const first = 'i01    ', second = 'i02    ';
+    const prefix = 'de.bmw.infotainment.personalization.UserAccountManager.';
+    const duplicateName = 'ЭЮЯ';
+    const accounts = Array.from(Buffer.from([first, duplicateName, second, duplicateName, '', '', guest].join('\0') + '\0'));
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) return listReply(accounts);
+        assert.deepEqual(bytes, [0x2e, 0xe3, 0x34, 0x69, 0x30, 0x32, 0x20, 0x20, 0x20, 0x20]);
+        h.state.active = 'SYSTEM2';
+        h.state.reference = prefix + 'i02';
+        return [0x6e, 0xe3, 0x34];
+    });
+    h.state.active = 'SYSTEM1';
+    h.state.reference = prefix + 'i01';
+    h.state.name = duplicateName;
+
+    await h.workflow.refresh();
+    assert.equal(h.workflow.active.id, first);
+    assert.equal(h.workflow.active.matchedByReference, true);
+    assert.deepEqual(h.workflow.accountMatches, { ids: 1, names: 2 });
+    assert.equal(await h.workflow.login(second), true);
+    assert.equal(h.workflow.state, 'confirmed');
+    assert.equal(h.workflow.active.id, second);
+
+    h.state.active = first;
+    await h.workflow.refresh();
+    assert.deepEqual(h.workflow.accountMatches, { ids: 2, names: 2 });
+    assert.equal(h.workflow.active, null);
+    assert.equal(await h.workflow.rename(second, 'Another name'), false);
+
+    h.state.active = 'SYSTEM2';
+    h.state.reference = 'unrelated.i02';
+    await h.workflow.refresh();
+    assert.equal(h.workflow.active, null);
+    h.state.reference = prefix + 'i02';
+    h.state.type = 'guest';
+    await h.workflow.refresh();
+    assert.equal(h.workflow.active, null);
+    assert.deepEqual(h.signal.requests.filter((bytes) => bytes[0] === 0x2e), [loginRequest(second)]);
 });
 
 test('Duplicate names leave ECU acceptance without identifying a profile', async () => {
@@ -629,6 +672,7 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     assert.equal(labels.ID_INDEX, 'SGBD index · 0F25B0');
     assert.equal(labels.STATUS, 'Unexpected reply to 22 E3 33. See Diagnostics.');
     assert.equal(labels.NRC, '22 E3 33 · 8 UDS bytes · Missing profile field separator');
+    assert.equal(labels.PROFILE_CAPACITY, 'Driver profiles · Up to 3');
 
     const extraBytes = 55 - listReply(empty).length;
     accounts = empty.concat(Array(extraBytes).fill(0xa5));
@@ -636,7 +680,13 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
     assert.equal(labels.STATUS, 'Profiles refreshed.');
     assert.equal(labels.NRC, 'Last error · 22 E3 33 · 8 UDS bytes · Missing profile field separator');
-    assert.deepEqual(signals.requests, [ident, list, ident, list]);
+    assert.equal(labels.PROFILE_CAPACITY, 'Driver profiles · 1 of 3');
+
+    accounts = Array.from(Buffer.from(['', '', '', '', '', '', guest].join('\0') + '\0'));
+    await clicks.REFRESH();
+    for (let i = 0; i < 5; i++) await new Promise(setImmediate);
+    assert.equal(labels.PROFILE_CAPACITY, 'Driver profiles · 0 of 3');
+    assert.deepEqual(signals.requests, [ident, list, ident, list, ident, list]);
 });
 
 test('UI renders account details without Array.flatMap and still supports profile actions', async () => {
@@ -648,6 +698,7 @@ test('UI renders account details without Array.flatMap and still supports profil
     const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
     let activeId = user, userName = 'Zoë', denyActivation = true, sessionChanged;
     let reference = 'current', diagnosticNameBytes, systemName;
+    let thirdProfile = ['', ''];
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {
             if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => reference };
@@ -680,7 +731,7 @@ test('UI renders account details without Array.flatMap and still supports profil
         if (bytes[0] === 0x22) {
             const accounts = Array.from(Buffer.concat([
                 Buffer.from(user + '\0'), diagnosticNameBytes || Buffer.from(userName),
-                Buffer.from('\0' + [added, 'TEST_NAME', '', '', guest].join('\0') + '\0')
+                Buffer.from('\0' + [added, 'TEST_NAME', ...thirdProfile, guest].join('\0') + '\0')
             ]));
             return listReply(accounts.concat(0xa5));
         }
@@ -746,6 +797,8 @@ test('UI renders account details without Array.flatMap and still supports profil
     enter('MAIN');
     await settle();
     assert.equal(labels.PARK, 'Parked · Verified');
+    assert.equal(labels.PROFILE_CAPACITY, 'Driver profiles · 2 of 3');
+    assert.equal(enabled.CREATE, true);
     assert.equal(labels.NRC, '22 E3 33 · Skipped 1 bytes after guest ID.');
     assert.equal(labels.PROFILE_0, 'Active · Zoë');
     assert.equal(labels.PROFILE_1, 'TEST_NAME');
@@ -899,4 +952,13 @@ test('UI renders account details without Array.flatMap and still supports profil
     assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [
         loginRequest(added), loginRequest(added), renameRequest('A'), renameRequest('БМВ')
     ]);
+
+    await clicks.APPLY();
+    thirdProfile = ['THIRD03', 'Third driver'];
+    await settle();
+    assert.equal(labels.PROFILE_CAPACITY, 'Driver profiles · 3 of 3');
+    assert.equal(enabled.CREATE, false);
+    await clicks.CREATE();
+    assert.equal(screen, 'MAIN');
+    assert.ok(!signals.requests.some((bytes) => bytes[0] === 0x31));
 });

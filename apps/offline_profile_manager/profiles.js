@@ -1,5 +1,7 @@
 'use strict';
 
+const MAX_DRIVER_PROFILES = 3;
+
 class DiagnosticError extends Error {
     constructor(code, nrc) {
         super(code);
@@ -40,7 +42,7 @@ function decodeAccounts(payload) {
     try {
         const profiles = [];
         let nameError;
-        for (let slot = 1; slot <= 3; slot++) {
+        for (let slot = 1; slot <= MAX_DRIVER_PROFILES; slot++) {
             const idBytes = next(false);
             const field = { bytes: next(false) };
             nameFields.push(field);
@@ -98,4 +100,6 @@ function matchCreatedProfile(before, after, reportedId) {
     return { profile };
 }
 
-module.exports = { DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity, matchCreatedProfile };
+module.exports = {
+    DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity, matchCreatedProfile, MAX_DRIVER_PROFILES
+};

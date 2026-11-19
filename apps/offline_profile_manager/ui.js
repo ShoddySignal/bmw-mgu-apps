@@ -1,6 +1,7 @@
 'use strict';
 
 const { ProfileDiag, validName, NAME_MAX_BYTES } = require('./diag');
+const { MAX_DRIVER_PROFILES } = require('./profiles');
 const { enterProfileName } = require('./speller');
 const { Workflow } = require('./workflow');
 const { Vehicle, monotonicMs } = require('./vehicle');
@@ -144,7 +145,7 @@ async function start(ctx, kit, sdk) {
     function can(action, id) {
         if (intent && intent.phase === 'speller') return false;
         if ((refreshPending && inFront('MAIN')) || work.busy || !link.available || !work.profiles) return false;
-        if (action === 'create') return !work.pendingPiaId && work.profiles.filter((p) => p.type !== 'guest').length < 3;
+        if (action === 'create') return !work.pendingPiaId && work.driverProfileCount < MAX_DRIVER_PROFILES;
         const profile = driverProfile(id);
         if (!profile) return false;
         if (action === 'resumePia') return id === work.pendingPiaId;
@@ -195,12 +196,16 @@ async function start(ctx, kit, sdk) {
             work.refresh();
         }
         const profiles = work.profiles || [];
+        const count = work.driverProfileCount;
+        const profileCapacity = 'Driver profiles · ' + (count === null ? 'Up to ' : count + ' of ') + MAX_DRIVER_PROFILES;
         const message = status(work);
         const activeId = vehicle.isCurrentAccount(work.active) ? work.active.id : null;
         const systemAccount = vehicle.isCurrentAccount(work.systemAccount) ? work.systemAccount : null;
         const parkingIssue = vehicle.parkingIssue();
         const activeIssue = !work.profiles ? 'Profile list unavailable' : systemAccount ?
             'No unique profile match' : vehicle.activeIssue || 'Checking system account';
+        const activeStatus = !activeId ? activeIssue : work.active.matchedByName ? 'Matched by name' :
+            work.active.matchedByReference ? 'Matched by reference' : 'Verified';
         const pending = work.pendingPiaId;
         let listMessage = message;
         if (work.state === 'ready' && !profiles.length) listMessage = 'No profiles found.';
@@ -227,6 +232,7 @@ async function start(ctx, kit, sdk) {
         try {
             await Promise.all(rows.concat([
                 ui.text('STATUS', listMessage),
+                ui.text('PROFILE_CAPACITY', profileCapacity),
                 ui.enabled('REFRESH', !!link.available && !work.busy),
                 ui.text('CREATE', pending ? 'Finish profile setup' : 'Create offline profile'),
                 ui.enabled('CREATE', pending ? !!can('resumePia', pending) : !!can('create')),
@@ -234,8 +240,7 @@ async function start(ctx, kit, sdk) {
                 ui.text('ID_INDEX', 'SGBD index · ' + (work.identity ? work.identity.index : 'Unavailable')),
                 ui.text('ID_VERSION', 'Software version · ' + (software ? software.version : 'Unavailable')),
                 ui.text('ID_VARIANT', 'Software variant · ' + (software ? software.variantId : 'Unavailable')),
-                ui.text('ACTIVE', 'Active account · ' + (activeId ?
-                    (work.active.matchedByName ? 'Matched by name' : 'Verified') : activeIssue)),
+                ui.text('ACTIVE', 'Active account · ' + activeStatus),
                 ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
                 ui.text('NRC', diagnostic(work, message)),
                 renderAccountDetails(systemAccount, work.profiles),

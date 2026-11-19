@@ -1,14 +1,21 @@
 'use strict';
 
-const { DiagnosticError, matchCreatedProfile } = require('./profiles');
+const { DiagnosticError, matchCreatedProfile, MAX_DRIVER_PROFILES } = require('./profiles');
 const { loginRequest, validName } = require('./diag');
 const ACTIVATION_CONFIRMATION_MS = 8000;
 const ACTIVATION_POLL_MS = 500;
 const CREATION_LIST_CONFIRMATION_MS = 8000;
 const CREATION_LIST_POLL_MS = 500;
+const ACCOUNT_REFERENCE_PREFIX = 'de.bmw.infotainment.personalization.UserAccountManager.';
 
 function matchingProfiles(profiles, account) {
-    const byId = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
+    const reference = account.reference || '';
+    const instance = reference.startsWith(ACCOUNT_REFERENCE_PREFIX) ? reference.slice(ACCOUNT_REFERENCE_PREFIX.length) : '';
+    // E333 pads the three-character instance to seven bytes on the tested G05.
+    const paddedId = account.type !== 'guest' && instance.length === 3 && /^i[0-9]{2}$/.test(instance) ?
+        instance + '    ' : null;
+    const byId = profiles.filter((profile) => profile.id === account.id || profile.id === reference ||
+        (profile.type !== 'guest' && profile.id === paddedId));
     const byName = account.name ? profiles.filter((profile) => profile.name === account.name) : [];
     return { byId, byName };
 }
@@ -16,7 +23,11 @@ function matchingProfiles(profiles, account) {
 function matchActiveProfile(profiles, account) {
     if (!account) return null;
     const { byId, byName } = matchingProfiles(profiles, account);
-    if (byId.length) return byId.length === 1 ? { ...account, id: byId[0].id } : null;
+    if (byId.length > 1) return null;
+    if (byId.length === 1) {
+        const id = byId[0].id;
+        return { ...account, id, matchedByReference: id !== account.id && id !== account.reference };
+    }
     if (account.type === 'guest') return null;
     return byName.length === 1 && byName[0].type !== 'guest' ?
         { ...account, id: byName[0].id, matchedByName: true } : null;
@@ -149,6 +160,10 @@ class Workflow {
         return { ids: byId.length, names: this.systemAccount.name ? byName.length : null };
     }
 
+    get driverProfileCount() {
+        return this.profiles ? this.profiles.filter((profile) => profile.type !== 'guest').length : null;
+    }
+
     permit(current, active) {
         current();
         if (!this.visible()) throw new DiagnosticError('writeDisabled');
@@ -163,7 +178,7 @@ class Workflow {
             this.permit(current);
             if (this.pendingPiaId) throw new DiagnosticError('piaPending');
             const before = await this.readProfiles(current);
-            if (before.filter((p) => p.type !== 'guest').length >= 3) throw new DiagnosticError('capacity');
+            if (this.driverProfileCount >= MAX_DRIVER_PROFILES) throw new DiagnosticError('capacity');
 
             this.profiles = null;
             this.active = null;

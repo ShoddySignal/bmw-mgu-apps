@@ -22,6 +22,25 @@ The old prototype archive was unavailable. Its two earlier request values come f
 | `STEUERN / PERSONALISATION_LOGIN_ACCOUNT` | `2E E3 34 <seven ID bytes>` | `ARG_0xE334_D` specifies `string[7]`. `0x450C7–0x451AF` enforces the length and strips the `pars` terminator. The bytecode adds no padding. |
 | `PERSONALISATION_RENAME_ACCOUNT` | `2E E3 35 <name> 00` | Literal at `0xC9417`. The old value was `2E D0 2E`. The `pars` and `scat` instructions at `0xC94D0` and `0xC9511` preserve the NUL terminator. EdiabasLib encodes its text argument as Windows-1252. The app encodes names with Latin and Russian letters in UTF-8 and limits the name to 24 bytes before the terminator. The ECU's non-ASCII handling and maximum length require vehicle testing. |
 | `STEUERN_PIA_04_CHANGE_PROFILE` | `31 01 02 08 04 <slot> <mode>` | Literal at `0xC9ACA`. The two arguments are inserted at `0xC9B25` and `0xC9B76`. The app allows only mode `02` for driver slots `00`–`02`. The `71 01 02 08` reply acknowledges the request. Persistence and the mapping to `E333` require verification on the target unit. |
-| `STATUS_PIA_CURRENT_PROFILE` | Multi-step exchange | The job changes diagnostic sessions and reads a profile data stream. The app uses SessionManager and checks for a unique match in `E333` by `UserAccount.id` or by the current account reference. |
+| `STATUS_PIA_CURRENT_PROFILE` | Multi-step exchange | The job changes diagnostic sessions and reads a profile data stream. The app uses SessionManager to identify the active profile. See [Profile IDs and active account](#profile-ids-and-active-account). |
 
 TASU generates the transport envelope. The adapter matches replies against physical address `0x63`, service ID, and DID or routine echo. NRC `78` extends the current wait within its deadline. Live compatibility, session mapping and the availability of fresh stationary signals require vehicle validation.
+
+## Profile IDs and active account
+
+On the BMW X5 G05 with SGBD index `0F25B0`, software `L18_22w18.3-1-6` and variant `mgu-high`, diagnostics showed the following values with each driver profile selected.
+
+| Selected profile | SessionManager reference suffix | ID returned by `22 E3 33` | ID bytes |
+| --- | --- | --- | --- |
+| First | `UserAccountManager.i01` | `i01\x20\x20\x20\x20` | `69 30 31 20 20 20 20` |
+| Second | `UserAccountManager.i02` | `i02\x20\x20\x20\x20` | `69 30 32 20 20 20 20` |
+
+Each `\x20` represents one ASCII space in the ID. These four spaces were observed on this unit. The PRG specifies a seven-byte ID for `2E E3 34`. The app sends the seven bytes directly from the selected E333 entry. The request ends after the ID. For the second profile in the table, its UDS bytes are `2E E3 34 69 30 32 20 20 20 20`.
+
+For active-profile detection, the app reads `SessionManager.currentUserAccountReference` and uses it to read `UserAccount.id`, `name`, and `type`. It refreshes on `currentUserOnChange`. The full SessionManager reference and `UserAccount.id` are separate values from the E333 ID and can differ from it.
+
+For references of the form `de.bmw.infotainment.personalization.UserAccountManager.iNN`, the app also compares the instance `iNN` plus four ASCII spaces with the IDs of driver profiles in E333. A single matching row identifies the active profile. Conflicting identifier matches leave the active profile unresolved. With zero identifier matches, a unique exact driver name can identify it. **Diagnostics → Show account details** shows identifier and name match counts, so `ID/reference 1` and `Exact name 2` still identify a single active profile.
+
+The G05 observations cover `i01` and `i02`. Automated tests cover both and confirm that the outgoing ID retains its four spaces. Vehicle validation of the app's reference matching is pending.
+
+One E333 reply from the same unit returned the name `ЭЮЯ` as UTF-8 bytes `D0 AD D0 AE D0 AF`. This confirms the encoding of that name in the read response.
