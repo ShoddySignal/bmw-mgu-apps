@@ -1,6 +1,6 @@
 'use strict';
 
-const { DiagnosticError, decodeAccounts, decodeCreationResult, decodeIdentity } = require('./profiles');
+const { DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity } = require('./profiles');
 const ADDRESS = 0x63;
 const IDENT = [0x22, 0xf1, 0x50];
 const ACCOUNTS = [0x22, 0xe3, 0x33];
@@ -33,18 +33,19 @@ const PIA_PERMANENT = [0, 1, 2].map((slot) => piaRequest(slot, 2));
 function decodeReply(request, uds) {
     if (uds === null) throw new DiagnosticError('timeout');
     if (!uds || !uds.length || Array.from(uds).some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
-        throw new DiagnosticError('payload');
+        throw malformed('Invalid UDS frame');
     }
     if (uds[0] === 0x7f) {
-        if (uds.length !== 3 || uds[1] !== request[0]) throw new DiagnosticError('payload');
+        if (uds.length !== 3 || uds[1] !== request[0]) throw malformed('Invalid UDS refusal');
         if (uds[2] === 0x78) return { pending: true };
         throw new DiagnosticError('nrc', uds[2]);
     }
     const end = request[0] === 0x31 ? 4 : 3;
+    if (uds.length < end) throw malformed('Truncated UDS header');
     if (uds[0] !== request[0] + 0x40 || request.slice(1, end).some((b, i) => uds[i + 1] !== b)) {
-        throw new DiagnosticError('payload');
+        throw malformed('Unexpected UDS response header');
     }
-    if (request[0] === 0x2e && uds.length !== end) throw new DiagnosticError('payload');
+    if (request[0] === 0x2e && uds.length !== end) throw malformed('Extra data in write response');
     return { payload: Array.from(uds).slice(end) };
 }
 
@@ -57,7 +58,7 @@ class ProfileDiag {
         transport.on('available', (up) => { if (!up) this.generation++; });
     }
 
-    async request(bytes, beforeSend) {
+    async request(bytes, beforeSend, decode) {
         const read = bytes === IDENT || bytes === ACCOUNTS || bytes === CREATION_RESULT;
         const write = bytes === CREATE || PIA_PERMANENT.includes(bytes) || (bytes[0] === 0x2e && bytes[1] === 0xe3 &&
             (bytes[2] === 0x34 || bytes[2] === 0x35));
@@ -68,11 +69,12 @@ class ProfileDiag {
         const generation = this.generation;
         const sid = bytes[0], data = bytes.slice(1);
         const accept = this.replyTo(sid, data);
+        const headerLength = sid === 0x31 ? 4 : 3;
+        let replyLength;
         try {
             const uds = await this.link.physical(ADDRESS, sid, data, 3500, (frame) => {
                 // Let short positive responses from this service reach the decoder.
-                const echoLength = sid === 0x31 ? 4 : 3;
-                return accept(frame) || (frame[0] === sid + 0x40 && frame.length < echoLength);
+                return accept(frame) || (frame[0] === sid + 0x40 && frame.length < headerLength);
             }, {
                 maxRetries: 0,
                 callTimeoutMs: 3500,
@@ -84,11 +86,19 @@ class ProfileDiag {
                 }
             });
             if (!this.link.available || generation !== this.generation) throw new DiagnosticError('offline');
+            replyLength = uds && uds.length;
             const result = decodeReply(bytes, uds);
             if (result.pending) throw new DiagnosticError('timeout'); // Kit normally consumes NRC 78.
-            return result.payload;
+            return decode ? decode(result.payload) : result.payload;
         } catch (error) {
-            if (error instanceof DiagnosticError) throw error;
+            if (error instanceof DiagnosticError) {
+                if (error.code === 'payload' && Number.isInteger(replyLength)) {
+                    // Keep only the service and DID or routine ID. Arguments may contain account data.
+                    error.request = bytes.slice(0, headerLength).map((b) => b.toString(16).padStart(2, '0')).join(' ').toUpperCase();
+                    error.replyLength = replyLength;
+                }
+                throw error;
+            }
             if (/timeout|timed out|ETIMEDOUT/i.test(String(error))) throw new DiagnosticError('timeout');
             throw new DiagnosticError('transport');
         } finally {
@@ -96,9 +106,9 @@ class ProfileDiag {
         }
     }
 
-    async identify() { return decodeIdentity(await this.request(IDENT)); }
-    async accounts() { return decodeAccounts(await this.request(ACCOUNTS)); }
-    async creationResult() { return decodeCreationResult(await this.request(CREATION_RESULT)); }
+    identify() { return this.request(IDENT, null, decodeIdentity); }
+    accounts() { return this.request(ACCOUNTS, null, decodeAccounts); }
+    creationResult() { return this.request(CREATION_RESULT, null, decodeCreationResult); }
     create(permit) { return this.write(CREATE, permit); }
     login(id, permit) { return this.write(loginRequest(id), permit); }
     rename(name, permit) { return this.write(renameRequest(name), permit); }

@@ -23,6 +23,8 @@ The app refreshes the profile list when you return to the main screen. If creati
 3. Under **Diagnostics**, record the SGBD index, software version and variant, parking status and any NRC. Confirm that the app can recognize the stationary vehicle.
 4. Select a different existing profile from the BMW menu. Reopen the app and refresh. Compare the **Active** indicator with the BMW menu. If the app reports **Activity unknown**, share the status and software version without names, full account IDs, VIN or raw frames.
 
+If the app reports an unexpected reply, **Diagnostics** shows the request identifier, UDS reply size and the reason the parser rejected it. Share that line with the SGBD index and software version.
+
 | Operation | What to verify on the target unit |
 | --- | --- |
 | Identify and list | Confirm a `62 F1 50` response with the HU_MGU SGBD index `0F25B0`. Verify the `62 E3 33` layout with both occupied and empty slots. A different index requires checking its own SGBD. |

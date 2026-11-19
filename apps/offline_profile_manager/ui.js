@@ -51,9 +51,12 @@ function status(workflow) {
     case 'ready': return workflow.pendingPiaId ? 'Profile created. Choose Finish profile setup.' : 'Profiles refreshed.';
     case 'error': {
         const error = workflow.detail;
-        const message = error.code === 'nrc' ?
-            'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.' :
-            ERRORS[error.code] || 'The diagnostic operation did not finish.';
+        let message = ERRORS[error.code] || 'The diagnostic operation did not finish.';
+        if (error.code === 'nrc') {
+            message = 'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.';
+        } else if (error.code === 'payload' && error.request) {
+            message = 'Unexpected reply to ' + error.request + '. See Diagnostics.';
+        }
         return workflow.pendingPiaId ? 'PIA setup pending. ' + message : message;
     }
     default: return 'Read-only mode. Open the app to connect to HU_MGU.';
@@ -119,6 +122,9 @@ async function start(ctx, kit, sdk) {
         }
         const profiles = work.profiles || [];
         const message = status(work);
+        const error = work.state === 'error' && work.detail;
+        const diagnostic = error && error.code === 'payload' && error.request ?
+            error.request + ' · ' + error.replyLength + ' UDS bytes · ' + error.reason : message;
         const activeId = work.active && work.active.id;
         const pending = work.pendingPiaId;
         const firmwareReady = ['create', 'login', 'pia', 'rename'].some((action) => work.approved(action));
@@ -154,7 +160,7 @@ async function start(ctx, kit, sdk) {
                 ui.text('ID_VARIANT', 'Software variant · ' + (software ? software.variantId : 'Unavailable')),
                 ui.text('ACTIVE', 'Active account · ' + (work.active ? 'Verified' : 'Unverified')),
                 ui.text('PARK', 'Parked · ' + (vehicle.stationary() ? 'Verified' : 'Unverified')),
-                ui.text('NRC', message),
+                ui.text('NRC', diagnostic),
                 ui.text('DRAFT', 'New name · ' + (draft || '—')),
                 ui.enabled('RENAME_NEXT', validName(draft)),
                 ui.enabled('APPLY', !work.busy && !!intent && (intent.phase === 'confirm' || intent.phase === 'done')),

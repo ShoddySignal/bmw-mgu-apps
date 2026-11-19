@@ -107,7 +107,8 @@ test('PRG account format: fixed field order, UTF-8 names, empty slots and guest'
     assert.equal(decodeAccounts(full.slice(0, -1))[1].slot, 2);
     assert.deepEqual(decodeAccounts([0, 0, 0, 0, 0, 0]), []);
     assert.throws(() => decodeAccounts(empty.slice(0, 5)), { code: 'payload' });
-    assert.throws(() => decodeAccounts(empty.concat(0)), { code: 'payload' });
+    assert.deepEqual(decodeAccounts(empty.concat(0, 0, 0)), decodeAccounts(empty));
+    assert.throws(() => decodeAccounts(empty.concat(0, 65)), { code: 'payload', reason: 'Extra data after guest ID' });
     assert.throws(() => decodeAccounts([65, 0, 0xc0, 0, 0, 0, 0, 0, 0]), { code: 'payload' });
     assert.throws(() => decodeAccounts(Array.from(Buffer.from('A\0x\0A\0y\0\0\0\0'))), { code: 'payload' });
 });
@@ -426,6 +427,35 @@ test('UI starts without UDS, opens in read-only mode, and recovers after link lo
     assert.equal(value, false);
     assert.match(labels.STATUS, /connection to HU_MGU lost/i);
     signals.setAvailable(true);
+    for (let i = 0; i < 5; i++) await new Promise(setImmediate);
+    assert.equal(labels.STATUS, 'Profiles refreshed.');
+    assert.deepEqual(signals.requests, [ident, list, ident, list]);
+});
+
+test('Diagnostics identifies a malformed startup reply and recovers with a zero-padded profile list', async () => {
+    let visible = false, onVisible;
+    const labels = {}, clicks = {};
+    const ui = {
+        isVisible: (name) => visible && name === 'MAIN', hasFocus: () => true,
+        onVisible: (listener) => { onVisible = listener; }, onFocus() {},
+        onClick: (name, listener) => { clicks[name] = listener; },
+        text: async (name, text) => { labels[name] = text; },
+        cells: async () => {}, visible: async () => {}, enabled: async () => {}
+    };
+    const settings = { get: () => false, set() {}, onChange() {} };
+    const truncated = empty.slice(0, 5);
+    let accounts = truncated;
+    const signals = new FakeSignals((bytes) => bytes[1] === 0xf1 ? identReply : listReply(accounts));
+    await start({ ui, settings, signals, spec }, kit, {});
+    visible = true;
+    onVisible('MAIN', true);
+    for (let i = 0; i < 5; i++) await new Promise(setImmediate);
+    assert.equal(labels.ID_INDEX, 'SGBD index · 0F25B0');
+    assert.equal(labels.STATUS, 'Unexpected reply to 22 E3 33. See Diagnostics.');
+    assert.equal(labels.NRC, '22 E3 33 · 8 UDS bytes · Missing profile field separator');
+
+    accounts = empty.concat(0, 0);
+    await clicks.REFRESH();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
     assert.equal(labels.STATUS, 'Profiles refreshed.');
     assert.deepEqual(signals.requests, [ident, list, ident, list]);

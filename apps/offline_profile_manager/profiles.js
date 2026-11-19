@@ -8,17 +8,17 @@ class DiagnosticError extends Error {
     }
 }
 
-const malformed = () => new DiagnosticError('payload');
+const malformed = (reason) => Object.assign(new DiagnosticError('payload'), { reason });
 
 function text(bytes, encoding) {
     const value = Buffer.from(bytes).toString(encoding);
-    if (!Buffer.from(value, encoding).equals(Buffer.from(bytes)) ||
-        /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(value)) throw malformed();
+    if (!Buffer.from(value, encoding).equals(Buffer.from(bytes))) throw malformed('Invalid text encoding');
+    if (/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(value)) throw malformed('Unsupported text character');
     return value;
 }
 
 function accountId(bytes) {
-    if (bytes.some((byte) => byte < 0x20 || byte > 0x7e)) throw malformed();
+    if (bytes.some((byte) => byte < 0x20 || byte > 0x7e)) throw malformed('Invalid account ID encoding');
     return text(bytes, 'ascii');
 }
 
@@ -29,7 +29,7 @@ function decodeAccounts(payload) {
     function next(last) {
         let end = payload.indexOf(0, offset);
         if (end < 0) {
-            if (!last) throw malformed();
+            if (!last) throw malformed('Missing profile field separator');
             end = payload.length;
         }
         const field = payload.slice(offset, end);
@@ -41,24 +41,26 @@ function decodeAccounts(payload) {
         const id = accountId(next(false));
         const name = text(next(false), 'utf8');
         if (id) profiles.push({ id, name, slot, type: null });
-        else if (name) throw malformed();
+        else if (name) throw malformed('Profile name without an ID');
     }
     const guestId = accountId(next(true));
     if (guestId) profiles.push({ id: guestId, name: 'Guest', slot: null, type: 'guest' });
-    if (offset !== payload.length || new Set(profiles.map((p) => p.id)).size !== profiles.length) throw malformed();
+    // The PRG reads the guest ID as its final string. A zero-filled tail carries no additional fields.
+    if (payload.slice(offset).some((byte) => byte !== 0)) throw malformed('Extra data after guest ID');
+    if (new Set(profiles.map((p) => p.id)).size !== profiles.length) throw malformed('Duplicate account IDs');
     return profiles;
 }
 
 function decodeCreationResult(payload) {
     // Both fields of RES_0xA19A_R apply to RRR. The ID is optional.
-    if (!payload.length || ![0, 1, 2, 3, 255].includes(payload[0])) throw malformed();
+    if (!payload.length || ![0, 1, 2, 3, 255].includes(payload[0])) throw malformed('Invalid creation status');
     const end = payload.indexOf(0, 1);
-    if (end !== -1 && end !== payload.length - 1) throw malformed();
+    if (end !== -1 && end !== payload.length - 1) throw malformed('Extra data after created account ID');
     return { status: payload[0], id: accountId(payload.slice(1, end < 0 ? payload.length : end)) || null };
 }
 
 function decodeIdentity(payload) {
-    if (payload.length < 3) throw malformed();
+    if (payload.length < 3) throw malformed('Missing SGBD index bytes');
     const index = Buffer.from(payload.slice(0, 3)).toString('hex').toUpperCase();
     return { index, isMgu: index === '0F25B0' };
 }
@@ -71,4 +73,4 @@ function createdProfile(before, after, reportedId) {
     return added[0];
 }
 
-module.exports = { DiagnosticError, decodeAccounts, decodeCreationResult, decodeIdentity, createdProfile };
+module.exports = { DiagnosticError, malformed, decodeAccounts, decodeCreationResult, decodeIdentity, createdProfile };
