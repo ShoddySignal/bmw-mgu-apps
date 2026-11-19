@@ -6,7 +6,9 @@ Create, activate and rename profiles from the main screen. Each action asks for 
 
 ## Installation
 
-Follow the [GitHub installation instructions](../../README.md#install-through-mgu-store) if your car is online. To install from USB, copy the two files generated in `dist/usb/mgu-repo/offline_profile_manager` to `mgu-repo/offline_profile_manager` on your USB drive. Open **MGU Store → USB**, select **Offline Profile Manager** and choose **Install**. The Store uses SDK components from the existing firmware. [MGU Store USB documentation](https://github.com/robertnisipeanu/mgu-store#offline-usb-stick)
+To install online, add `ShoddySignal/bmw-mgu-apps` as a **Releases** source in MGU Store, then select **Check now** and install **Offline Profile Manager** from the **Store** tab. [Full MGU Store installation steps](../../README.md#install-through-mgu-store)
+
+To install from USB, copy the two files generated in `dist/usb/mgu-repo/offline_profile_manager` to `mgu-repo/offline_profile_manager` on your USB drive. Open **MGU Store → USB**, select **Offline Profile Manager** and choose **Install**. The Store uses SDK components from the existing firmware. [MGU Store USB documentation](https://github.com/robertnisipeanu/mgu-store#offline-usb-stick)
 
 ## Create an offline profile
 

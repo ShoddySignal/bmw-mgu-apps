@@ -9,11 +9,14 @@ A shared MGU Store source for BMW iDrive 7 apps. Each app has its own ID, versio
 
 ## Install through MGU Store
 
-1. Connect MGU Store to the internet. Under **Settings → Accounts**, sign in to GitHub. Grant the **mgu-store** GitHub App read access to this private repository.
-2. Under **Settings → Add source**, enter `ShoddySignal/bmw-mgu-apps` and select **Releases**.
-3. Select **Check now**. In **Store**, open the app you want and choose **Install**.
+1. Connect the head unit to the internet and open **MGU Store**.
+2. Go to **Settings → Add source**, enter `ShoddySignal/bmw-mgu-apps`, and select **OK**. Choose **Releases** when the Store asks what to follow.
+3. Go back to **Settings**, select **Check now**, and wait for the app list to refresh.
+4. Open **Store**, choose **Offline Profile Manager** or **Mirror Heat Check**, then select **Install**. When installation finishes, open the app from the iDrive app menu.
 
-Add the source once. MGU Store selects the newest release package for each app ID. [MGU Store documentation](https://github.com/robertnisipeanu/mgu-store/blob/main/docs/PUBLISHING.md#1-releases)
+The repository is public and can be added without signing in to GitHub. Add the source once for both apps. MGU Store installs the latest published version of each app. [Published versions on GitHub](https://github.com/ShoddySignal/bmw-mgu-apps/releases)
+
+To update an installed app later, select **Check now** and use **Installed → Update**. [MGU Store documentation](https://github.com/robertnisipeanu/mgu-store#sources)
 
 ## Add and release an app
 
