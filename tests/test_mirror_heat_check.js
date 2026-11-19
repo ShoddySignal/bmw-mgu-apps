@@ -4,11 +4,11 @@ const { strict: assert } = require('node:assert');
 const { test } = require('node:test');
 const { EventEmitter } = require('node:events');
 const diagKit = require('../kit/runtime/diag');
-const { MirrorDiag, DIDS, decodeRead } = require('../apps/mirror_heat/protocol');
-const { Monitor } = require('../apps/mirror_heat/monitor');
-const { Parking, isParked, stage } = require('../apps/mirror_heat/parking');
-const { labels, bindUi } = require('../apps/mirror_heat/ui');
-const { signals, screens } = require('../apps/mirror_heat/app.json');
+const { MirrorDiag, DIDS, decodeRead } = require('../apps/mirror_heat_check/protocol');
+const { Monitor } = require('../apps/mirror_heat_check/monitor');
+const { Parking, isParked, stage } = require('../apps/mirror_heat_check/parking');
+const { labels, bindUi } = require('../apps/mirror_heat_check/ui');
+const { signals, screens } = require('../apps/mirror_heat_check/app.json');
 
 const OFF = [0x62, 0xd3, 0x2d, 0, 0, 0, 0];
 const ON = [0x62, 0xd3, 0x2d, 0, 1, 0, 100];
