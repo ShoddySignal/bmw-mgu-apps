@@ -5,6 +5,12 @@ const { loginRequest, validName } = require('./diag');
 const ACTIVATION_CONFIRMATION_MS = 8000;
 const ACTIVATION_POLL_MS = 500;
 
+function matchActiveProfile(profiles, account) {
+    if (!account) return null;
+    const matches = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
+    return matches.length === 1 ? { ...account, id: matches[0].id } : null;
+}
+
 class Workflow {
     constructor(diag, vehicle, { visible, changed, wait, now,
         pendingPiaId, savePendingPia = () => {} }) {
@@ -20,21 +26,22 @@ class Workflow {
         this.profiles = null;
         this.extraAccountBytes = 0;
         this.active = null;
+        this.systemAccount = null;
         this.pendingPiaId = typeof pendingPiaId === 'string' && pendingPiaId ? pendingPiaId : null;
         this.savePendingPia = savePendingPia;
         this.created = new Set(this.pendingPiaId ? [this.pendingPiaId] : []);
         this.state = 'idle';
         this.detail = null;
         this.operation = null;
-        this.lastError = null;
+        this.lastIssue = null;
     }
 
     stage(state, detail) {
         if (state === 'error') {
             detail.operation = this.operation;
             detail.afterAcceptance = this.state === 'accepted';
-            this.lastError = detail;
         }
+        if (state === 'error' || state === 'activationUnverified') this.lastIssue = detail;
         this.state = state;
         this.detail = detail || null;
         this.changed();
@@ -51,6 +58,7 @@ class Workflow {
         this.profiles = null;
         this.extraAccountBytes = 0;
         this.active = null;
+        this.systemAccount = null;
         this.stage('error', new DiagnosticError('offline'));
     }
 
@@ -82,6 +90,7 @@ class Workflow {
             this.profiles = null;
             this.extraAccountBytes = 0;
             this.active = null;
+            this.systemAccount = null;
             const identity = await this.diag.identify();
             current();
             this.identity = identity;
@@ -101,7 +110,10 @@ class Workflow {
         current();
         this.profiles = profiles;
         this.extraAccountBytes = extraBytes;
-        this.active = active && profiles.some((p) => p.id === active.id) ? active : null;
+        this.systemAccount = active;
+        this.active = matchActiveProfile(profiles, active);
+        if (this.active && this.lastIssue && this.lastIssue.code === 'activationUnverified' &&
+            this.lastIssue.id === this.active.id) this.lastIssue = null;
         return profiles;
     }
 
@@ -123,6 +135,7 @@ class Workflow {
 
             this.profiles = null;
             this.active = null;
+            this.systemAccount = null;
             await this.diag.create(() => this.permit(current));
             current();
             this.stage('accepted');
@@ -168,6 +181,7 @@ class Workflow {
     async completePia(account, current) {
         this.stage('settingPia');
         this.active = null;
+        this.systemAccount = null;
         // The E333 list is one-based while the documented PIA slots are zero-based.
         await this.diag.setPermanentPia(account.slot - 1, () => this.permit(current));
         current();
@@ -178,32 +192,38 @@ class Workflow {
     login(id) {
         return this.profileAction('login', id, async (account, current) => {
             loginRequest(account.id);
+            const profiles = this.profiles;
             this.profiles = null;
             this.active = null;
+            this.systemAccount = null;
             await this.diag.login(account.id, () => this.permit(current));
             current();
             this.stage('accepted');
             const deadline = this.now() + ACTIVATION_CONFIRMATION_MS;
-            let reason;
             do {
                 current();
                 const active = await this.vehicle.activeAccount();
                 current();
-                reason = active ? 'SessionManager still reports a different active account' :
-                    this.vehicle.activeIssue || 'Active account unavailable';
-                if (active && active.id === account.id) {
+                const match = matchActiveProfile(profiles, active);
+                if (match && match.id === id) {
                     await this.readProfiles(current);
-                    if (this.active && this.active.id === account.id) {
+                    if (this.active && this.active.id === id) {
                         this.stage('confirmed', { action: 'login', id: account.id });
                         return;
                     }
-                    reason = this.vehicle.activeIssue || 'Active account could not be matched to the refreshed profile list';
                 }
                 const remaining = deadline - this.now();
                 if (remaining <= 0) break;
                 await this.wait(Math.min(remaining, ACTIVATION_POLL_MS));
             } while (this.now() < deadline);
-            throw Object.assign(new DiagnosticError('active'), { request: '2E E3 34', reason });
+            await this.readProfiles(current);
+            if (this.active && this.active.id === id) {
+                this.stage('confirmed', { action: 'login', id });
+                return;
+            }
+            const reason = this.active ? 'A different profile is still active' : this.systemAccount ?
+                'System account has no unique match in the profile list' : this.vehicle.activeIssue || 'Active account unavailable';
+            this.stage('activationUnverified', { code: 'activationUnverified', id, request: '2E E3 34', reason });
         });
     }
 
@@ -214,6 +234,7 @@ class Workflow {
             if (!active || active.id !== account.id) throw new DiagnosticError('active');
             this.profiles = null;
             this.active = null;
+            this.systemAccount = null;
             await this.diag.rename(name, () => this.permit(current, active));
             current();
             this.stage('accepted');

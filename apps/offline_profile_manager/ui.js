@@ -39,9 +39,6 @@ function profileLabel(name) {
 }
 
 function errorMessage(error) {
-    if (error.code === 'active' && error.operation === 'login' && error.afterAcceptance) {
-        return 'ECU accepted activation. Active profile unverified. See Diagnostics.';
-    }
     if (error.code === 'nrc') {
         return 'ECU rejected the request. NRC 0x' + error.nrc.toString(16).toUpperCase().padStart(2, '0') + '.';
     }
@@ -49,8 +46,11 @@ function errorMessage(error) {
 }
 
 function diagnostic(workflow, message) {
-    const error = workflow.lastError;
+    const error = workflow.lastIssue;
     if (error) {
+        if (error.code === 'activationUnverified') {
+            return error.request + ' · Activation accepted · ' + error.reason;
+        }
         const previous = workflow.state === 'error' ? '' : 'Last error · ';
         const phase = error.afterAcceptance ? 'After ECU acceptance · ' : '';
         if (error.code === 'payload' && error.request) {
@@ -71,6 +71,7 @@ function status(workflow) {
     case 'waiting': return 'Waiting for ECU reply...';
     case 'accepted': return 'ECU accepted the request. Checking the result...';
     case 'settingPia': return 'Profile created. Applying permanent PIA settings...';
+    case 'activationUnverified': return 'Activation accepted. Check the active profile in iDrive.';
     case 'confirmed': {
         if (workflow.detail.action !== 'create') return CONFIRMED[workflow.detail.action];
         return 'Created “' + profileLabel(workflow.detail.name) + '”. Select it in the app or in iDrive.';
@@ -144,12 +145,15 @@ async function start(ctx, kit, sdk) {
         const profiles = work.profiles || [];
         const message = status(work);
         const activeId = vehicle.isCurrentAccount(work.active) ? work.active.id : null;
+        const systemAccount = vehicle.isCurrentAccount(work.systemAccount) ? work.systemAccount : null;
         const parkingIssue = vehicle.parkingIssue();
-        const activeIssue = work.profiles ? vehicle.activeIssue || 'Active ID absent from profile list' : 'Profile list unavailable';
+        const activeIssue = !work.profiles ? 'Profile list unavailable' : systemAccount ?
+            'System identifiers do not match a unique profile' : vehicle.activeIssue || 'Checking system account';
         const pending = work.pendingPiaId;
         let listMessage = message;
         if (work.state === 'ready' && !profiles.length) listMessage = 'No profiles found.';
-        else if (work.state === 'ready' && !activeId && !pending) listMessage = 'Active profile unavailable. See Diagnostics.';
+        else if ((work.state === 'ready' || work.state === 'activationUnverified') && !activeId && !pending &&
+            systemAccount && systemAccount.name) listMessage = 'Active in iDrive · ' + profileLabel(systemAccount.name);
         const rows = PROFILE_ROWS.map((name, i) => {
             const profile = profiles[i];
             if (!profile) return ui.visible(name, false);

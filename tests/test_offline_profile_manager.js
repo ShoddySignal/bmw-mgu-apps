@@ -83,7 +83,7 @@ async function harness(exchange, overrides = {}) {
     const vehicle = {
         parkingIssue: () => !state.speedKnown ? 'Speed sample missing or stale' :
             state.parked ? null : 'A selector signal reports a position other than P',
-        activeAccount: async () => state.active ? { id: state.active } : null,
+        activeAccount: async () => state.active ? { id: state.active, reference: state.reference, name: state.name } : null,
         stillActive: (x) => x.id === state.active
     };
     let time = 0;
@@ -206,11 +206,10 @@ test('Activation requires an independent exact active-account match before renam
     assert.equal(await h.workflow.rename(added, 'My Driver'), false);
     assert.equal(h.workflow.detail.code, 'active');
     assert.ok(h.signal.requests.every((b) => b[0] === 0x22));
-    assert.equal(await h.workflow.login(added), false);
-    assert.equal(h.workflow.detail.code, 'active');
+    assert.equal(await h.workflow.login(added), true);
+    assert.equal(h.workflow.state, 'activationUnverified');
     assert.equal(h.workflow.detail.request, '2E E3 34');
-    assert.equal(h.workflow.detail.reason, 'SessionManager still reports a different active account');
-    assert.equal(h.workflow.detail.afterAcceptance, true);
+    assert.equal(h.workflow.detail.reason, 'A different profile is still active');
     change = true;
     assert.equal(await h.workflow.login(added), true);
     assert.equal(elapsed, 2500);
@@ -218,6 +217,46 @@ test('Activation requires an independent exact active-account match before renam
     assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [
         loginRequest(added), loginRequest(added), renameRequest('My Driver')
     ]);
+});
+
+test('Activation can match a distinct system ID by exact reference, and rejects conflicting matches', async () => {
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) return listReply(full);
+        h.state.active = 'SYSTEM002';
+        h.state.reference = added;
+        return [0x6e, 0xe3, 0x34];
+    });
+    await h.workflow.refresh();
+    assert.equal(await h.workflow.login(added), true);
+    assert.equal(h.workflow.state, 'confirmed');
+    assert.equal(h.workflow.active.id, added);
+    assert.equal(h.workflow.systemAccount.id, 'SYSTEM002');
+
+    h.state.active = user; // The system ID and reference now point to different rows.
+    await h.workflow.refresh();
+    assert.equal(h.workflow.active, null);
+    assert.equal(await h.workflow.rename(added, 'New Name'), false);
+    assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added)]);
+});
+
+test('ECU acceptance is reported when the system account has a name but no matching identifier', async () => {
+    const h = await harness((bytes) => {
+        if (bytes[0] === 0x22) return listReply(full);
+        h.state.active = 'SYSTEM002';
+        h.state.reference = 'ACCOUNT002';
+        h.state.name = 'TEST_NAME';
+        return [0x6e, 0xe3, 0x34];
+    });
+    await h.workflow.refresh();
+    assert.equal(await h.workflow.login(added), true);
+    assert.equal(h.workflow.state, 'activationUnverified');
+    assert.equal(h.workflow.lastIssue.reason, 'System account has no unique match in the profile list');
+    assert.equal(h.workflow.active, null);
+    assert.equal(h.workflow.systemAccount.name, 'TEST_NAME');
+    await h.workflow.refresh();
+    assert.equal(h.workflow.lastIssue.code, 'activationUnverified');
+    assert.equal(await h.workflow.rename(added, 'New Name'), false);
+    assert.deepEqual(h.signal.requests.filter((b) => b[0] === 0x2e), [loginRequest(added)]);
 });
 
 test('Creates a profile, sets PIA, and renames it with extended account replies', async () => {
@@ -490,7 +529,7 @@ test('Create opens one confirmation and can be cancelled before sending a comman
     signals.setAvailable(true);
     await clicks.APPLY();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
-    assert.equal(labels.STATUS, 'Active profile unavailable. See Diagnostics.');
+    assert.equal(labels.STATUS, 'Profiles refreshed.');
     assert.deepEqual(signals.requests, [ident, list, ident, list, ident, list]);
 });
 
@@ -520,7 +559,7 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
     accounts = empty.concat(Array(extraBytes).fill(0xa5));
     await clicks.REFRESH();
     for (let i = 0; i < 5; i++) await new Promise(setImmediate);
-    assert.equal(labels.STATUS, 'Active profile unavailable. See Diagnostics.');
+    assert.equal(labels.STATUS, 'Profiles refreshed.');
     assert.equal(labels.NRC, 'Last error · 22 E3 33 · 8 UDS bytes · Missing profile field separator');
     assert.deepEqual(signals.requests, [ident, list, ident, list]);
 });
@@ -532,7 +571,9 @@ test('UI follows the active account, retains a failure and can discard a draft n
         async proxy(iface) {
             if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => 'current' };
             if (iface.endsWith('UserAccount')) {
-                return { isAvailable: () => true, getValue: async (key) => key === 'id' ? activeId : 'LOCAL' };
+                return { isAvailable: () => true, getValue: async (key) => ({
+                    id: activeId, type: 'LOCAL', name: activeId === user ? userName : 'TEST_NAME'
+                })[key] };
             }
             return super.proxy();
         }
@@ -624,7 +665,8 @@ test('UI follows the active account, retains a failure and can discard a draft n
     activeId = 'UNKNOWN';
     sessionChanged();
     await settle();
-    assert.equal(labels.STATUS, 'Active profile unavailable. See Diagnostics.');
+    assert.equal(labels.STATUS, 'Active in iDrive · TEST_NAME');
+    assert.equal(labels.ACTIVE, 'Active account · System identifiers do not match a unique profile');
     assert.equal(labels.PROFILE_1, 'TEST_NAME');
     assert.equal(enabled.RENAME, false);
 

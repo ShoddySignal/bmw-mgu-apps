@@ -151,12 +151,16 @@ class Vehicle {
             this.activeIssue = 'Active account ID unavailable';
             const id = await read(account, 'id');
             if (typeof id !== 'string' || !id || /[^ -~]/.test(id)) return null;
-            let type;
-            try { type = await read(account, 'type'); } catch (e) { type = null; }
+            const [type, name] = await Promise.all([
+                read(account, 'type').catch(() => null),
+                read(account, 'name').catch(() => null)
+            ]);
             this.activeIssue = 'Active account changed during verification';
             if (await read(this.sessionLink, REFERENCE) !== reference || this.sessionEpoch !== epoch) return null;
             this.activeIssue = null;
-            return { id, type: profileType(type), epoch, at: this.now() };
+            const displayName = typeof name === 'string' && name.trim() &&
+                !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(name) ? name : null;
+            return { id, reference, name: displayName, type: profileType(type), epoch, at: this.now() };
         } catch (e) {
             return null;
         } finally {
