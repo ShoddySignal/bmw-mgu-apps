@@ -146,10 +146,16 @@ test('Identity and RRR decode fail closed on partial or unknown values', () => {
 test('Exact account and PIA request bytes, no guessed padding', () => {
     assert.deepEqual(loginRequest(user), [0x2e, 0xe3, 0x34, 85, 83, 69, 82, 48, 48, 49]);
     assert.deepEqual(renameRequest('Test 1'), [0x2e, 0xe3, 0x35, 84, 101, 115, 116, 32, 49, 0]);
+    assert.deepEqual(renameRequest('БМВ'), [0x2e, 0xe3, 0x35, 0xd0, 0x91, 0xd0, 0x9c, 0xd0, 0x92, 0]);
+    assert.deepEqual(renameRequest('Ёё'), [0x2e, 0xe3, 0x35, 0xd0, 0x81, 0xd1, 0x91, 0]);
+    assert.equal(renameRequest('Я'.repeat(12)).length, 28);
+    assert.equal(renameRequest('A'.repeat(24)).length, 28);
     assert.deepEqual(piaRequest(10, 2), [0x31, 1, 2, 8, 4, 10, 2]);
     assert.throws(() => loginRequest('SHORT'), { code: 'id' });
     assert.throws(() => loginRequest('A\0B0001'), { code: 'id' });
     assert.throws(() => renameRequest('Zoë'), { code: 'name' });
+    assert.throws(() => renameRequest('Я'.repeat(13)), { code: 'name' });
+    assert.throws(() => renameRequest('БМВ\0'), { code: 'name' });
     assert.throws(() => piaRequest(15, 2), { code: 'argument' });
 });
 
@@ -685,7 +691,8 @@ test('UI renders account details without Array.flatMap and still supports profil
             return [0x6e, 0xe3, 0x34];
         }
         assert.equal(activeId, user);
-        userName = 'A';
+        assert.equal(bytes[bytes.length - 1], 0);
+        userName = Buffer.from(bytes.slice(3, -1)).toString('utf8');
         return [0x6e, 0xe3, 0x35];
     });
     let screen = null, onVisible;
@@ -857,11 +864,11 @@ test('UI renders account details without Array.flatMap and still supports profil
 
     enteringName = clicks.RENAME();
     await settle();
-    spellerNotify({ interactionParameters: new Map([[102, 'БМВ'], [105, true]]) });
+    spellerNotify({ interactionParameters: new Map([[102, 'БМВ/'], [105, true]]) });
     await enteringName;
     await settle();
     assert.equal(screen, 'MAIN');
-    assert.equal(labels.STATUS, 'Use up to 24 letters (A–Z), digits, spaces, hyphens or underscores.');
+    assert.equal(labels.STATUS, 'Use Latin (A–Z) or Russian letters, digits, spaces, - or _. Max 24 UTF-8 bytes.');
 
     enteringName = clicks.RENAME();
     await settle();
@@ -876,5 +883,20 @@ test('UI renders account details without Array.flatMap and still supports profil
     assert.ok(!signals.requests.some((bytes) => bytes[0] === 0x2e && bytes[2] === 0x35));
     await clicks.APPLY();
     assert.equal(labels.CONFIRM_TEXT, 'New name confirmed.');
-    assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [loginRequest(added), loginRequest(added), renameRequest('A')]);
+    await clicks.APPLY();
+    await settle();
+
+    enteringName = clicks.RENAME();
+    await settle();
+    spellerNotify({ interactionParameters: new Map([[102, 'БМВ'], [105, true]]) });
+    await enteringName;
+    assert.equal(screen, 'CONFIRM');
+    assert.equal(labels.CONFIRM_TEXT, 'Rename active profile “A” to “БМВ”?');
+    assert.equal(userName, 'A');
+    await clicks.APPLY();
+    assert.equal(labels.CONFIRM_TEXT, 'New name confirmed.');
+    assert.equal(userName, 'БМВ');
+    assert.deepEqual(signals.requests.filter((b) => b[0] === 0x2e), [
+        loginRequest(added), loginRequest(added), renameRequest('A'), renameRequest('БМВ')
+    ]);
 });

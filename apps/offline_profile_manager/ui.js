@@ -1,6 +1,6 @@
 'use strict';
 
-const { ProfileDiag, validName } = require('./diag');
+const { ProfileDiag, validName, NAME_MAX_BYTES } = require('./diag');
 const { enterProfileName } = require('./speller');
 const { Workflow } = require('./workflow');
 const { Vehicle, monotonicMs } = require('./vehicle');
@@ -32,7 +32,7 @@ const ERRORS = {
     slotChanged: 'The profile slot changed. Open Finish profile setup and confirm again.',
     piaPending: 'Choose Finish profile setup to continue.',
     id: 'The profile ID has an unexpected format for activation.',
-    name: 'Use up to 24 letters (A–Z), digits, spaces, hyphens or underscores.',
+    name: 'Use Latin (A–Z) or Russian letters, digits, spaces, - or _. Max ' + NAME_MAX_BYTES + ' UTF-8 bytes.',
     renameMissing: 'ECU accepted the request. The new name is awaiting confirmation.'
 };
 const CONFIRMED = {

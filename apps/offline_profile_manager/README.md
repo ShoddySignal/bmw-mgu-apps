@@ -14,7 +14,7 @@ To install from USB, copy the two files generated in `dist/usb/mgu-repo/offline_
 
 1. With the vehicle in P, choose **Create offline profile** and confirm. The app verifies the new account and applies permanent PIA mode to its slot. The confirmation screen shows the new profile's name.
 2. Select the profile in **CAR → Driver Profiles** in iDrive or select its row in the app and confirm activation.
-3. Choose **Rename active profile** to open the iDrive text entry screen. Enter a name of up to 24 ASCII characters using the controller, then select **OK**. Use iDrive **Back** to cancel input. After **OK**, the app shows the old and new names for confirmation and checks the active account again before writing.
+3. Choose **Rename active profile** to open the iDrive text entry screen. Enter a name using Latin letters (A–Z), Russian letters, digits, spaces, hyphens, or underscores, then select **OK**. The app allows up to 24 UTF-8 bytes, which fits 24 ASCII characters or 12 Russian letters. Use iDrive **Back** to cancel input. After **OK**, the app shows the old and new names for confirmation and checks the active account again before writing.
 
 The app refreshes the profile list when you return to the main screen. If creation succeeds and permanent PIA setup is interrupted, choose **Finish profile setup** to continue with the saved account.
 

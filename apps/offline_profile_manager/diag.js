@@ -6,7 +6,7 @@ const IDENT = [0x22, 0xf1, 0x50];
 const ACCOUNTS = [0x22, 0xe3, 0x33];
 const CREATE = [0x31, 0x01, 0xa1, 0x9a];
 const CREATION_RESULT = [0x31, 0x03, 0xa1, 0x9a];
-const NAME_MAX = 24; // Application limit. The PRG does not specify an ECU maximum.
+const NAME_MAX_BYTES = 24; // Application limit. The PRG does not specify an ECU maximum.
 
 function loginRequest(id) {
     if (typeof id !== 'string' || id.length !== 7 || /[^ -~]/.test(id)) throw new DiagnosticError('id');
@@ -14,13 +14,13 @@ function loginRequest(id) {
 }
 
 function validName(name) {
-    return typeof name === 'string' && name.length > 0 && name.length <= NAME_MAX &&
-        name.trim() === name && !/[^A-Za-z0-9 _-]/.test(name);
+    return typeof name === 'string' && name.length > 0 && name.trim() === name &&
+        !/[^A-Za-zА-Яа-яЁё0-9 _-]/.test(name) && Buffer.byteLength(name, 'utf8') <= NAME_MAX_BYTES;
 }
 
 function renameRequest(name) {
     if (!validName(name)) throw new DiagnosticError('name');
-    return [0x2e, 0xe3, 0x35].concat(Array.from(Buffer.from(name, 'ascii')), 0);
+    return [0x2e, 0xe3, 0x35].concat(Array.from(Buffer.from(name, 'utf8')), 0);
 }
 
 function piaRequest(slot, mode) {
@@ -119,4 +119,4 @@ class ProfileDiag {
     }
 }
 
-module.exports = { ProfileDiag, decodeReply, loginRequest, renameRequest, piaRequest, validName, NAME_MAX };
+module.exports = { ProfileDiag, decodeReply, loginRequest, renameRequest, piaRequest, validName, NAME_MAX_BYTES };
