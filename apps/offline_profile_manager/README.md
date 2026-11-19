@@ -1,6 +1,6 @@
 # Offline Profile Manager for BMW iDrive 7
 
-Diagnostics were tested on a 2022 BMW X5 G05 with HU_MGU, software version `L18_22w18.3-1-6`, variant `mgu-high` and SGBD index `0F25B0`. Version 0.1.6 reads accounts when you open the app. Select **Refresh profiles** to read them again. No BMW ID, ConnectedDrive connection, Tool32 or ENET connection is required after installation.
+Diagnostics were tested on a 2022 BMW X5 G05 with HU_MGU, software version `L18_22w18.3-1-6`, variant `mgu-high` and SGBD index `0F25B0`. The app reads accounts when you open it. Select **Refresh profiles** to read them again. No BMW ID, ConnectedDrive connection, Tool32 or ENET connection is required after installation.
 
 Create, activate and rename profiles from the main screen. Each action asks for confirmation and checks that the vehicle is stationary in P before sending a write. Choose **Cancel** to leave a confirmation or discard a draft name. The list marks the current profile as **Active** and refreshes when iDrive reports a profile change.
 
@@ -25,7 +25,7 @@ The app refreshes the profile list when you return to the main screen. If creati
 
 **Diagnostics** keeps the last failure available after refreshing the list. It shows the command or operation, the reason and, where available, the ECU refusal code or reply length. It also explains why the app could not confirm Park or the active profile. Share those lines with the SGBD index and software version.
 
-Choose **Diagnostics → Show account IDs** to compare the effective `UserAccount.id`, the SessionManager reference and the IDs from `22 E3 33`. Lengths are shown in UTF-8 bytes and spaces appear as `\x20`. The app displays the values on this screen and clears them when you leave.
+Choose **Diagnostics → Show account details** to compare IDs and names from iDrive and `22 E3 33`. The match counts show how many profiles match either system identifier and how many match the exact system name. Quoted text shows UTF-8 byte lengths, `\x20` for spaces and Unicode escapes for non-ASCII characters. Each driver slot shows the length and first 48 raw name bytes from the ECU in HEX, with `…` marking longer fields. These bytes are available even if a name fails UTF-8 decoding. The app keeps these values on this screen and clears the display when you leave.
 
 On `mgu-high` firmware `L18_22w18.3-1-6`, a 55-byte profile reply was observed with nonzero data after the guest ID. The app uses the seven documented fields for display and write checks and reports any skipped bytes in **Diagnostics**. The decoder requires valid fields and unique account IDs.
 

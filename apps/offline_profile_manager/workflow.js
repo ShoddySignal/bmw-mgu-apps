@@ -5,12 +5,17 @@ const { loginRequest, validName } = require('./diag');
 const ACTIVATION_CONFIRMATION_MS = 8000;
 const ACTIVATION_POLL_MS = 500;
 
+function matchingProfiles(profiles, account) {
+    const byId = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
+    const byName = account.name ? profiles.filter((profile) => profile.name === account.name) : [];
+    return { byId, byName };
+}
+
 function matchActiveProfile(profiles, account) {
     if (!account) return null;
-    const byId = profiles.filter((profile) => profile.id === account.id || profile.id === account.reference);
+    const { byId, byName } = matchingProfiles(profiles, account);
     if (byId.length) return byId.length === 1 ? { ...account, id: byId[0].id } : null;
-    if (!account.name || account.type === 'guest') return null;
-    const byName = profiles.filter((profile) => profile.name === account.name);
+    if (account.type === 'guest') return null;
     return byName.length === 1 && byName[0].type !== 'guest' ?
         { ...account, id: byName[0].id, matchedByName: true } : null;
 }
@@ -33,6 +38,7 @@ class Workflow {
         this.identity = null;
         this.profiles = null;
         this.extraAccountBytes = 0;
+        this.accountNames = [];
         this.active = null;
         this.systemAccount = null;
         this.pendingPiaId = typeof pendingPiaId === 'string' && pendingPiaId ? pendingPiaId : null;
@@ -65,6 +71,7 @@ class Workflow {
         this.identity = null;
         this.profiles = null;
         this.extraAccountBytes = 0;
+        this.accountNames = [];
         this.active = null;
         this.systemAccount = null;
         this.stage('error', new DiagnosticError('offline'));
@@ -97,6 +104,7 @@ class Workflow {
             this.identity = null;
             this.profiles = null;
             this.extraAccountBytes = 0;
+            this.accountNames = [];
             this.active = null;
             this.systemAccount = null;
             const identity = await this.diag.identify();
@@ -113,16 +121,30 @@ class Workflow {
     }
 
     async readProfiles(current) {
-        const { profiles, extraBytes } = await this.diag.accounts();
-        const active = await this.vehicle.activeAccount();
+        const { profiles, extraBytes, nameFields, error } = await this.diag.accounts().catch((error) => ({
+            error, nameFields: error.nameFields
+        }));
         current();
-        this.profiles = profiles;
-        this.extraAccountBytes = extraBytes;
+        const active = !error || nameFields ? await this.vehicle.activeAccount() : null;
+        current();
+        this.profiles = profiles || null;
+        this.extraAccountBytes = extraBytes || 0;
+        this.accountNames = nameFields || [];
         this.systemAccount = active;
-        this.active = matchActiveProfile(profiles, active);
+        this.active = profiles ? matchActiveProfile(profiles, active) : null;
+        if (error) {
+            delete error.nameFields;
+            throw error;
+        }
         if (this.active && this.lastIssue && this.lastIssue.code === 'activationUnverified' &&
             this.lastIssue.id === this.active.id) this.lastIssue = null;
         return profiles;
+    }
+
+    get accountMatches() {
+        if (!this.profiles || !this.systemAccount) return null;
+        const { byId, byName } = matchingProfiles(this.profiles, this.systemAccount);
+        return { ids: byId.length, names: this.systemAccount.name ? byName.length : null };
     }
 
     permit(current, active) {

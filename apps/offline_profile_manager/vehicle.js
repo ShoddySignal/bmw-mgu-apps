@@ -158,9 +158,10 @@ class Vehicle {
             this.activeIssue = 'Active account changed during verification';
             if (await read(this.sessionLink, REFERENCE) !== reference || this.sessionEpoch !== epoch) return null;
             this.activeIssue = null;
-            const displayName = typeof name === 'string' && name.trim() &&
-                !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(name) ? name : null;
-            return { id, reference, name: displayName, type: profileType(type), epoch, at: this.now() };
+            const rawName = typeof name === 'string' ? name : null;
+            const displayName = rawName && rawName.trim() &&
+                !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(rawName) ? rawName : null;
+            return { id, reference, name: displayName, rawName, type: profileType(type), epoch, at: this.now() };
         } catch (e) {
             return null;
         } finally {

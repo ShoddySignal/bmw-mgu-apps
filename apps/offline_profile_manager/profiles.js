@@ -26,6 +26,7 @@ function decodeAccounts(payload) {
     // PERSONALISATION_ACCOUNT_IDS, 0xC6A68–0xC6FDB. Strip the echoed
     // DID first, then consume six NUL-terminated strings and the guest ID.
     let offset = 0;
+    const nameFields = [];
     function next(last) {
         let end = payload.indexOf(0, offset);
         if (end < 0) {
@@ -36,20 +37,37 @@ function decodeAccounts(payload) {
         offset = Math.min(end + 1, payload.length);
         return field;
     }
-    const profiles = [];
-    for (let slot = 1; slot <= 3; slot++) {
-        const id = accountId(next(false));
-        const name = text(next(false), 'utf8');
-        if (id) profiles.push({ id, name, slot, type: null });
-        else if (name) throw malformed('Profile name without an ID');
+    try {
+        const profiles = [];
+        let nameError;
+        for (let slot = 1; slot <= 3; slot++) {
+            const idBytes = next(false);
+            const field = { bytes: next(false) };
+            nameFields.push(field);
+            const id = accountId(idBytes);
+            try {
+                field.name = text(field.bytes, 'utf8');
+            } catch (error) {
+                if (!(error instanceof DiagnosticError)) throw error;
+                field.issue = error.reason;
+                if (!nameError) nameError = error;
+                continue;
+            }
+            if (id) profiles.push({ id, name: field.name, slot, type: null });
+            else if (field.name) throw malformed('Profile name without an ID');
+        }
+        if (nameError) throw nameError;
+        const guestId = accountId(next(true));
+        if (guestId) profiles.push({ id: guestId, name: 'Guest', slot: null, type: 'guest' });
+        // The PRG stops after reading the guest ID. Count extra data for diagnostics.
+        const tail = payload.slice(offset);
+        const extraBytes = tail.some((byte) => byte !== 0) ? tail.length : 0;
+        if (new Set(profiles.map((p) => p.id)).size !== profiles.length) throw malformed('Duplicate account IDs');
+        return { profiles, extraBytes, nameFields };
+    } catch (error) {
+        if (error instanceof DiagnosticError) error.nameFields = nameFields;
+        throw error;
     }
-    const guestId = accountId(next(true));
-    if (guestId) profiles.push({ id: guestId, name: 'Guest', slot: null, type: 'guest' });
-    // The PRG stops after reading the guest ID. Count extra data for diagnostics.
-    const tail = payload.slice(offset);
-    const extraBytes = tail.some((byte) => byte !== 0) ? tail.length : 0;
-    if (new Set(profiles.map((p) => p.id)).size !== profiles.length) throw malformed('Duplicate account IDs');
-    return { profiles, extraBytes };
 }
 
 function decodeCreationResult(payload) {

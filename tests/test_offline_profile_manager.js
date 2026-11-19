@@ -104,11 +104,19 @@ test('PRG account format: fixed field order, UTF-8 names, empty slots and guest'
         { id: user, name: 'Zoë', slot: 1, type: null },
         { id: guest, name: 'Guest', slot: null, type: 'guest' }
     ]);
+    assert.deepEqual(decodeAccounts(empty).nameFields[0], { name: 'Zoë', bytes: [0x5a, 0x6f, 0xc3, 0xab] });
+    const cyrillic = Array.from(Buffer.from([user, 'БМВ', '', '', '', '', guest].join('\0') + '\0'));
+    assert.deepEqual(decodeAccounts(cyrillic).nameFields[0], {
+        name: 'БМВ', bytes: [0xd0, 0x91, 0xd0, 0x9c, 0xd0, 0x92]
+    });
     assert.equal(decodeAccounts(full.slice(0, -1)).profiles[1].slot, 2);
-    assert.deepEqual(decodeAccounts([0, 0, 0, 0, 0, 0]), { profiles: [], extraBytes: 0 });
+    assert.deepEqual(decodeAccounts([0, 0, 0, 0, 0, 0]), {
+        profiles: [], extraBytes: 0,
+        nameFields: Array.from({ length: 3 }, () => ({ name: '', bytes: [] }))
+    });
     assert.throws(() => decodeAccounts(empty.slice(0, 5)), { code: 'payload' });
     assert.deepEqual(decodeAccounts(empty.concat(0, 0, 0)), decodeAccounts(empty));
-    assert.deepEqual(decodeAccounts(empty.concat(0, 65)), { profiles: decodeAccounts(empty).profiles, extraBytes: 2 });
+    assert.deepEqual(decodeAccounts(empty.concat(0, 65)), { ...decodeAccounts(empty), extraBytes: 2 });
     assert.throws(() => decodeAccounts([65, 0, 0xc0, 0, 0, 0, 0, 0, 0]), { code: 'payload' });
     assert.throws(() => decodeAccounts(Array.from(Buffer.from('A\0x\0A\0y\0\0\0\0'))), { code: 'payload' });
 });
@@ -605,13 +613,13 @@ test('Diagnostics identifies a malformed startup reply and displays a 55-byte pr
 test('UI follows the active account, retains a failure and can discard a draft name', async () => {
     const software = { version: 'L18_22w18.3-1-7', variantId: 'mgu-low' };
     let activeId = user, userName = 'Zoë', denyActivation = true, sessionChanged;
-    let reference = 'current';
+    let reference = 'current', diagnosticNameBytes, systemName;
     class ProfileSignals extends FakeSignals {
         async proxy(iface) {
             if (iface.endsWith('SessionManager')) return { isAvailable: () => true, getValue: async () => reference };
             if (iface.endsWith('UserAccount')) {
                 return { isAvailable: () => true, getValue: async (key) => ({
-                    id: activeId, type: 'LOCAL', name: activeId === user ? userName : 'TEST_NAME'
+                    id: activeId, type: 'LOCAL', name: systemName || (activeId === user ? userName : 'TEST_NAME')
                 })[key] };
             }
             return super.proxy();
@@ -636,7 +644,10 @@ test('UI follows the active account, retains a failure and can discard a draft n
     const signals = new ProfileSignals((bytes) => {
         if (bytes[1] === 0xf1) return identReply;
         if (bytes[0] === 0x22) {
-            const accounts = Array.from(Buffer.from([user, userName, added, 'TEST_NAME', '', '', guest].join('\0') + '\0'));
+            const accounts = Array.from(Buffer.concat([
+                Buffer.from(user + '\0'), diagnosticNameBytes || Buffer.from(userName),
+                Buffer.from('\0' + [added, 'TEST_NAME', '', '', guest].join('\0') + '\0')
+            ]));
             return listReply(accounts.concat(0xa5));
         }
         if (bytes[2] === 0x34) {
@@ -718,17 +729,47 @@ test('UI follows the active account, retains a failure and can discard a draft n
     assert.equal(screen, 'ACCOUNT_IDS');
     assert.equal(labels.SYSTEM_ACCOUNT_ID, 'UserAccount.id · 8 bytes · "UNKNOWN\\x20"');
     assert.equal(labels.SESSION_REFERENCE, 'SessionManager reference · 10 bytes · "Account\\x20\\u03A9"');
+    assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 9 bytes · "TEST_NAME"');
+    assert.equal(labels.ACCOUNT_MATCHES, 'Matches · ID/reference 0 · Exact name 1');
     assert.equal(labels.SLOT_1_ID, 'E333 slot 1 · 7 bytes · "USER001"');
+    assert.equal(labels.SLOT_1_NAME, 'E333 slot 1 name · 4 bytes · "Zo\\u00EB"');
+    assert.equal(labels.SLOT_1_NAME_HEX, 'E333 slot 1 name HEX · 4 bytes · 5A 6F C3 AB');
     assert.equal(labels.SLOT_2_ID, 'E333 slot 2 · 7 bytes · "NEW0002"');
     assert.equal(labels.SLOT_3_ID, 'E333 slot 3 · Empty');
     assert.equal(labels.GUEST_ACCOUNT_ID, 'E333 guest · 7 bytes · "GUEST00"');
     assert.deepEqual(signals.requests.slice(beforeOpeningIds), [ident, list]);
+
+    diagnosticNameBytes = Buffer.from('TEST_NAME');
+    sessionChanged();
+    await settle();
+    assert.equal(labels.ACCOUNT_MATCHES, 'Matches · ID/reference 0 · Exact name 2');
+
+    systemName = 'TEST_NAME\0';
+    sessionChanged();
+    await settle();
+    assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 10 bytes · "TEST_NAME\\u0000"');
+    assert.equal(labels.ACCOUNT_MATCHES, 'Matches · ID/reference 0 · Exact name Unavailable');
+
+    systemName = undefined;
+    diagnosticNameBytes = Buffer.from([0xc1, 0xcc, 0xc2]);
+    sessionChanged();
+    await settle();
+    assert.equal(labels.ACCOUNT_MATCHES, 'Matches · Unavailable');
+    assert.equal(labels.SYSTEM_ACCOUNT_NAME, 'UserAccount.name · 9 bytes · "TEST_NAME"');
+    assert.equal(labels.SLOT_1_NAME, 'E333 slot 1 name · Invalid text encoding');
+    assert.equal(labels.SLOT_1_NAME_HEX, 'E333 slot 1 name HEX · 3 bytes · C1 CC C2');
+    assert.equal(labels.SLOT_2_NAME, 'E333 slot 2 name · 9 bytes · "TEST_NAME"');
+    assert.equal(enabled.RENAME, false);
+
+    diagnosticNameBytes = undefined;
     await clicks.ACCOUNT_IDS_BACK();
     await settle();
     assert.equal(screen, 'DETAILS');
     assert.equal(labels.SYSTEM_ACCOUNT_ID, '');
     assert.equal(labels.SESSION_REFERENCE, '');
+    assert.equal(labels.SYSTEM_ACCOUNT_NAME, '');
     assert.equal(labels.SLOT_2_ID, '');
+    assert.equal(labels.SLOT_1_NAME_HEX, '');
     await clicks.DETAILS_BACK();
     await settle();
 

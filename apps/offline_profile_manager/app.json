@@ -2,7 +2,7 @@
   "id": "offline_profile_manager",
   "title": "Offline Profile Manager",
   "description": "Driver profile management for BMW iDrive 7. Diagnostics tested on BMW X5 G05 with L18_22w18.3-1-6 (mgu-high).",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "vendor": "Offline Profile Manager",
   "loggingId": "OFPF",
   "mguHmi": [
@@ -252,7 +252,7 @@
         [
           "button",
           "SHOW_ACCOUNT_IDS",
-          "Show account IDs"
+          "Show account details"
         ],
         [
           "button",
@@ -264,13 +264,21 @@
     {
       "name": "ACCOUNT_IDS",
       "kind": "menu",
-      "title": "Account IDs",
+      "title": "Account details",
       "items": [
+        ["text3", "ACCOUNT_MATCHES"],
+        ["text3", "SYSTEM_ACCOUNT_NAME"],
         ["text3", "SYSTEM_ACCOUNT_ID"],
         ["text3", "SESSION_REFERENCE"],
         ["text3", "SLOT_1_ID"],
+        ["text3", "SLOT_1_NAME"],
+        ["text3", "SLOT_1_NAME_HEX"],
         ["text3", "SLOT_2_ID"],
+        ["text3", "SLOT_2_NAME"],
+        ["text3", "SLOT_2_NAME_HEX"],
         ["text3", "SLOT_3_ID"],
+        ["text3", "SLOT_3_NAME"],
+        ["text3", "SLOT_3_NAME_HEX"],
         ["text3", "GUEST_ACCOUNT_ID"],
         ["button", "ACCOUNT_IDS_BACK", "Back to diagnostics"]
       ]

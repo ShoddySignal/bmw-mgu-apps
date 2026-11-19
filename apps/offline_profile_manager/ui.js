@@ -11,6 +11,7 @@ const ACCOUNT_ID_ROWS = [
     ['SLOT_3_ID', 'E333 slot 3', 3],
     ['GUEST_ACCOUNT_ID', 'E333 guest', null]
 ];
+const HEX_PREVIEW_BYTES = 48;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const TYPES = { guest: 'Guest', local: 'Local', connected: 'BMW ID' };
 const ERRORS = {
@@ -49,6 +50,15 @@ function accountValue(label, value, missing = 'Unavailable') {
     const quoted = JSON.stringify(value).replace(/ /g, '\\x20').replace(/[\u007f-\uffff]/g,
         (character) => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase());
     return label + ' · ' + Buffer.byteLength(value, 'utf8') + ' bytes · ' + quoted;
+}
+
+function nameHex(label, field) {
+    if (!field) return label + ' · Unavailable';
+    if (!field.bytes.length) return label + ' · Empty';
+    const bytes = field.bytes.slice(0, HEX_PREVIEW_BYTES)
+        .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+    return label + ' · ' + field.bytes.length + ' bytes · ' + bytes +
+        (field.bytes.length > HEX_PREVIEW_BYTES ? ' …' : '');
 }
 
 function errorMessage(error) {
@@ -116,7 +126,7 @@ async function start(ctx, kit, sdk) {
     const inFront = (name) => ui.isVisible(name) && ui.hasFocus(name);
     let intent = null, draft = '', key = 0;
     let refreshPending = true, renderQueued = false, rendering = false;
-    let accountIdsShown = false;
+    let accountDetailsShown = false;
     const keys = ctx.spec.screens.find((s) => s.name === 'EDIT').items.find((i) => i[1] === 'CHARACTER')[3];
     const work = new Workflow(diag, vehicle, {
         visible: () => inFront('CONFIRM') && intent && intent.phase === 'running' && !intent.revoked,
@@ -150,20 +160,32 @@ async function start(ctx, kit, sdk) {
         }
     }
 
-    function renderAccountIds(systemAccount, profiles) {
+    function renderAccountDetails(systemAccount, profiles) {
         const show = inFront('ACCOUNT_IDS');
-        if (!show && !accountIdsShown) return;
-        accountIdsShown = show;
+        if (!show && !accountDetailsShown) return;
+        accountDetailsShown = show;
+        const matches = work.accountMatches;
         const rows = [
-            ['SYSTEM_ACCOUNT_ID', 'UserAccount.id', systemAccount && systemAccount.id],
-            ['SESSION_REFERENCE', 'SessionManager reference', systemAccount && systemAccount.reference],
+            ['SYSTEM_ACCOUNT_ID', accountValue('UserAccount.id', systemAccount && systemAccount.id)],
+            ['SESSION_REFERENCE', accountValue('SessionManager reference', systemAccount && systemAccount.reference)],
+            ['SYSTEM_ACCOUNT_NAME', accountValue('UserAccount.name', systemAccount && systemAccount.rawName)],
+            ['ACCOUNT_MATCHES', matches ? 'Matches · ID/reference ' + matches.ids + ' · Exact name ' +
+                (matches.names === null ? 'Unavailable' : matches.names) : 'Matches · Unavailable'],
             ...ACCOUNT_ID_ROWS.map(([component, label, slot]) => {
                 const profile = profiles && profiles.find((entry) => entry.slot === slot);
-                return [component, label, profile && profile.id, profiles ? 'Empty' : 'Unavailable'];
+                return [component, accountValue(label, profile && profile.id, profiles ? 'Empty' : 'Unavailable')];
+            }),
+            ...[1, 2, 3].flatMap((slot) => {
+                const field = work.accountNames[slot - 1];
+                const label = 'E333 slot ' + slot + ' name';
+                return [
+                    ['SLOT_' + slot + '_NAME', accountValue(label, field && field.name,
+                        field && field.issue)],
+                    ['SLOT_' + slot + '_NAME_HEX', nameHex(label + ' HEX', field)]
+                ];
             })
         ];
-        return Promise.all(rows.map(([component, label, value, missing]) =>
-            ui.text(component, show ? accountValue(label, value, missing) : '')));
+        return Promise.all(rows.map(([component, value]) => ui.text(component, show ? value : '')));
     }
 
     async function render() {
@@ -215,7 +237,7 @@ async function start(ctx, kit, sdk) {
                     (work.active.matchedByName ? 'Matched by name' : 'Verified') : activeIssue)),
                 ui.text('PARK', 'Parked · ' + (parkingIssue || 'Verified')),
                 ui.text('NRC', diagnostic(work, message)),
-                renderAccountIds(systemAccount, work.profiles),
+                renderAccountDetails(systemAccount, work.profiles),
                 ui.text('DRAFT', 'New name · ' + (draft || '—')),
                 ui.enabled('RENAME_NEXT', !!intent && !intent.revoked && validName(draft) && !!can('rename', intent.id)),
                 ui.enabled('APPLY', !work.busy && !!intent && (intent.phase === 'done' ||
