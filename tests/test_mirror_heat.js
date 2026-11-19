@@ -6,8 +6,9 @@ const { EventEmitter } = require('node:events');
 const { Diag, replyTo } = require('../kit/runtime/diag');
 const { MirrorDiag, DIDS, decodeRead } = require('../apps/mirror_heat/protocol');
 const { Monitor } = require('../apps/mirror_heat/monitor');
-const { isParked, stage } = require('../apps/mirror_heat/parking');
+const { Parking, isParked, stage } = require('../apps/mirror_heat/parking');
 const { labels, bindUi } = require('../apps/mirror_heat/ui');
+const { signals } = require('../apps/mirror_heat/app.json');
 
 const OFF = [0x62, 0xd3, 0x2d, 0, 0, 0, 0];
 const ON = [0x62, 0xd3, 0x2d, 0, 1, 0, 100];
@@ -102,6 +103,31 @@ test('parking requires fresh exact zero and unambiguous P selector state', () =>
     assert.equal(isParked(zero, null, null, 6000), false);
     assert.equal(isParked({ value: 1, at: 5000 }, p, null, 6000), false);
     assert.equal(isParked(zero, p, { value: 'D', at: 5400 }, 6000), false);
+});
+
+test('gearbox fields use notifications while speed is polled', async () => {
+    const speed = 'de.bmw.infotainment.vehicle.Vehicle2';
+    const gearbox = 'de.bmw.infrastructure.VehicleInformation';
+    const watches = {};
+    const link = { available: true };
+    const parking = new Parking({
+        watch: async (iface, instance, handlers, log, options) => {
+            watches[iface] = { handlers, options };
+            return link;
+        }
+    }, {}, () => 1000);
+
+    await parking.init();
+    assert.equal(signals[gearbox].statusGearboxDrive, 's');
+    assert.equal(signals[gearbox].DataPowerTrain2, 's');
+    assert.equal(watches[gearbox].options.pollMs, undefined);
+    assert.equal(watches[speed].options.pollMs, 1200);
+    watches[speed].handlers.statusCarSpeed2({ speedVehicleCentreOfGravity: 0 });
+    assert.equal(parking.parked(), false);
+    watches[gearbox].handlers.DataPowerTrain2({ statusGearSelectionDrive: 'P' });
+    assert.equal(parking.parked(), true);
+    watches[gearbox].options.onAvailable(false);
+    assert.equal(parking.parked(), false);
 });
 
 test('reads a snapshot without writing and sends exactly one fixed write with a timed observation', async () => {

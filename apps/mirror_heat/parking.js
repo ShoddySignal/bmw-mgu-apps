@@ -37,17 +37,19 @@ class Parking {
     stamp(value) { return { value, at: this.now() }; }
 
     async init() {
-        const watch = (iface, fields, onAvailable) =>
-            this.signals.watch(iface, '1', fields, this.log, { pollMs: 1200, onAvailable });
+        const watch = (iface, fields, options) => this.signals.watch(iface, '1', fields, this.log, options);
         await Promise.all([
             watch('de.bmw.infotainment.vehicle.Vehicle2', {
                 statusCarSpeed2: (v) => { this.speed = this.stamp(v && v.speedVehicleCentreOfGravity); }
-            }, (up) => { if (!up) this.speed = null; }).then((link) => { this.speedLink = link; }),
+            }, {
+                pollMs: 1200,
+                onAvailable: (up) => { if (!up) this.speed = null; }
+            }).then((link) => { this.speedLink = link; }),
             watch('de.bmw.infrastructure.VehicleInformation', {
                 statusGearboxDrive: (v) => { this.primary = this.stamp(stage(v && v.statusActualStageDrive, false)); },
                 DataPowerTrain2: (v) => { this.alternate = this.stamp(stage(v && v.statusGearSelectionDrive, true)); }
-            }, (up) => {
-                if (!up) this.primary = this.alternate = null;
+            }, {
+                onAvailable: (up) => { if (!up) this.primary = this.alternate = null; }
             }).then((link) => { this.gearLink = link; })
         ]);
     }

@@ -6,6 +6,8 @@ Mirror Heat Check tests exterior mirror heating on the BMW X5 G05 with BDC_G05. 
 
 Copy both files from `dist/usb/mgu-repo/mirror_heat/` to `mgu-repo/mirror_heat/` on a USB drive. Open **MGU Store → USB** and select **Mirror Heat Check**. The ID7 package uses the SDK on the head unit. [MGU Store USB catalog format](https://github.com/robertnisipeanu/mgu-store/blob/main/docs/PUBLISHING.md#2-catalog)
 
+Version 0.1.1 subscribes to selector notifications on ID7 firmware with notification-only gearbox fields. **Read status** uses the BDC directly and is available without selector notifications.
+
 Build and test from the repository root.
 
 ```sh

@@ -42,10 +42,16 @@ jobs:
           METADATA: ${{ steps.build.outputs.metadata }}
           ICON: ${{ steps.build.outputs.icon }}
           NOTES: ${{ steps.build.outputs.notes }}
+          APP_ID: ${{ inputs.app_id }}
           REPLACE_EXISTING: ${{ inputs.replace_existing }}
         run: |
           if [[ "$REPLACE_EXISTING" != true ]]; then
-            gh release create "$RELEASE_TAG" "$PACKAGE" "$METADATA" "$ICON" \
+            icons=()
+            while IFS= read -r icon; do
+              icons+=("${METADATA%/*}/$icon")
+            done < <(jq -r '.apps[].icon' "$METADATA")
+            [[ ${#icons[@]} -gt 0 ]]
+            gh release create "$RELEASE_TAG" "$PACKAGE" "$METADATA" "${icons[@]}" \
               --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --notes-file "$NOTES"
             exit 0
           fi
@@ -62,12 +68,15 @@ jobs:
           file_digest() {
             printf 'sha256:%s\n' "$(sha256sum "$1" | cut -d ' ' -f 1)"
           }
-          for unchanged in "$METADATA" "$ICON"; do
-            [[ "$(asset_digest "$unchanged" <<< "$release")" == "$(file_digest "$unchanged")" ]] ||
-              { printf 'Asset differs from the existing release: %s\n' "$unchanged" >&2; exit 1; }
-          done
-
           backup_dir="$(mktemp -d "$RUNNER_TEMP/mgu-release-backup.XXXXXXXX")"
+          gh release download "$RELEASE_TAG" --pattern mgu-store.json --dir "$backup_dir" --repo "$GITHUB_REPOSITORY"
+          jq -es --arg app "$APP_ID" \
+            '((.[0].apps[$app] | type) == "object") and (.[0].apps[$app] == .[1].apps[$app])' \
+            "$backup_dir/mgu-store.json" "$METADATA" >/dev/null ||
+            { printf 'Store metadata differs for %s\n' "$APP_ID" >&2; exit 1; }
+          [[ "$(asset_digest "$ICON" <<< "$release")" == "$(file_digest "$ICON")" ]] ||
+            { printf 'Icon differs from the existing release: %s\n' "$ICON" >&2; exit 1; }
+
           gh release download "$RELEASE_TAG" --pattern "${PACKAGE##*/}" --dir "$backup_dir" --repo "$GITHUB_REPOSITORY"
           if ! gh release upload "$RELEASE_TAG" "$PACKAGE" --clobber --repo "$GITHUB_REPOSITORY"; then
             gh release upload "$RELEASE_TAG" "$backup_dir/${PACKAGE##*/}" --clobber --repo "$GITHUB_REPOSITORY"

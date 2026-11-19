@@ -78,6 +78,28 @@ def json_file(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
+def store_fields(spec):
+    return {key: spec[key] for key in ('title', 'description', 'mguHmi')}
+
+
+def stage_release_metadata(directory, selected):
+    # The Store reads the first mgu-store.json it finds across all releases.
+    # Include every app and its icon so any new release provides the full listing.
+    apps = {}
+    for manifest in sorted((ROOT / 'apps').glob('*/app.json')):
+        app_id = manifest.parent.name
+        spec = selected if app_id == selected['id'] else load_app(app_id)
+        icon = directory / f'{app_id}.png'
+        content = (manifest.parent / 'icon.png').read_bytes()
+        if len(content) > 128 * 1024:
+            raise ValueError(f'MGU Store icon for {app_id} exceeds 128 KiB')
+        icon.write_bytes(content)
+        apps[app_id] = {**store_fields(spec), 'icon': icon.name, 'iconSha256': hashlib.sha256(content).hexdigest()}
+    metadata = directory / 'mgu-store.json'
+    json_file(metadata, {'apps': apps})
+    return metadata
+
+
 def build_app(spec):
     app_id = spec['id']
     tag = f"{app_id}@{spec['version']}"
@@ -87,18 +109,11 @@ def build_app(spec):
     verify(DIST / f'{tag}.mgu', 'source/', spec)
     digest = hashlib.sha256(package.read_bytes()).hexdigest()
 
-    app_data = {'title': spec['title'], 'description': spec['description'], 'mguHmi': spec['mguHmi']}
+    app_data = store_fields(spec)
     release_dir = DIST / 'release' / tag
     release_dir.mkdir(parents=True, exist_ok=True)
     icon = release_dir / f'{app_id}.png'
-    generated_icon = DIST / app_id / 'rhmiData' / 'resources' / f'{app_id}_icon.png'
-    shutil.copyfile(generated_icon, icon)
-    if icon.stat().st_size > 128 * 1024:
-        raise ValueError('The MGU Store release icon must be at most 128 KiB')
-    metadata = release_dir / 'mgu-store.json'
-    json_file(metadata, {'apps': {app_id: {
-        **app_data, 'icon': icon.name, 'iconSha256': hashlib.sha256(icon.read_bytes()).hexdigest()
-    }}})
+    metadata = stage_release_metadata(release_dir, spec)
     notes = release_dir / 'notes.md'
     notes.write_text(
         f"{spec['description']}\n\nInstall through MGU Store with this repository's Releases channel.\n\n"

@@ -5,7 +5,7 @@ A shared MGU Store source for BMW iDrive 7 apps. Each app has its own ID, versio
 | App | ID | Status |
 | --- | --- | --- |
 | [Offline Profile Manager](apps/offline_profile_manager/) | `offline_profile_manager` | 0.1.0, read-only pending vehicle validation |
-| [Mirror Heat Check](apps/mirror_heat/) | `mirror_heat` | 0.1.0, G05 timed heater test, vehicle validation pending |
+| [Mirror Heat Check](apps/mirror_heat/) | `mirror_heat` | 0.1.1, G05 timed heater test, vehicle validation pending |
 
 ## Install through MGU Store
 
@@ -19,7 +19,7 @@ Add the source once. MGU Store selects the newest release package for each app I
 
 1. Put the app under `apps/<id>/` with its own `app.json`, `main.js` and `icon.png`. Match the manifest ID to the directory name and set `"mguHmi": ["ID7"]`. Use a stable, unique ID and an independent `major.minor.patch` version.
 2. Build locally with `python3 tools/build_mgu_app.py <id> --test`. The builder runs `tests/test_<id>.js` if present, checks the OAP archives and stages a USB catalog under `dist/usb/mgu-repo/<id>/`. BMW's SDK comes from the firmware when Store installs the app.
-3. On GitHub, open **Actions → Publish MGU Store app → Run workflow**. Select `main` and enter the app ID. The workflow publishes the selected app's `<id>@<version>.tgz`, icon and Store metadata in a release tagged `<id>@<version>`. To publish an update, set a higher version in that app's manifest.
+3. On GitHub, open **Actions → Publish MGU Store app → Run workflow**. Select `main` and enter the app ID. The workflow publishes the selected app's `<id>@<version>.tgz` in a release tagged `<id>@<version>`. Each release includes titles, descriptions, and icons for all apps because the Store reads one metadata file for the source. To publish an update, set a higher version in that app's manifest.
 
 [Offline Profile Manager vehicle validation](apps/offline_profile_manager/README.md#validate-on-the-vehicle) · [HU_MGU PRG audit](docs/HU_MGU_PRG_AUDIT.md)
 
