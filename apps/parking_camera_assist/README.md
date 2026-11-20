@@ -27,7 +27,11 @@ Copy `catalog.json` and the `.tgz` it lists from `dist/usb/mgu-repo/parking_came
 
 ## Test a camera
 
-On the G05, the central display reported context `20251` while the factory Parking View was visible. After starting the app, open and close Parking View once with the BMW button. Select **Test opening Parking View** and confirm with the vehicle stopped in P. The test uses `HMIControl.requestGraphicalContext` with the three fields captured from that screen. The result shows the method's reply and whether the central display reported `20251` during the test. Check whether the camera image actually appeared. This test needs validation on the vehicle.
+On the tested G05, **Test opening Parking View** opened context `20251` with no camera image. To set up a test, open and close Parking View once with the BMW button while the app is running. The app uses the three captured context fields to request the same screen with `HMIControl.requestGraphicalContext`.
+
+**Parking View + protected video** and **Parking View + DAS video** test the video step after the central display confirms `20251`. Each test requires the selected player to report `VIDEO_IDLE`. The report shows the reply from HMI and the player and display states after four seconds. `VIDEO_NO_DATA` indicates that a player reports a lack of video data. Check whether the camera image appears during the test. The combined tests need validation on the vehicle.
+
+To test the camera mode as well, open **Parking View camera tests** and choose **Capture factory camera mode**. Open ordinary Parking View once with the BMW button, wait for the image and close it. The app keeps the camera mode it observed while the factory screen was visible. Choose **XView3D** or **ICAM2 indirect**, choose whether to request a player after camera mode confirmation, and open **Review test**. Close Parking View after each attempt. The same factory capture can be used for every route while the app is running. **Test results** holds the last 12 attempts. Check the actual display during each run and note which tests showed an image.
 
 | Screen | Requests available |
 | --- | --- |
@@ -47,6 +51,8 @@ While parked with the camera closed, open **Factory trace** and select **Record 
 The screen shows the starting display IDs and parking menu state, followed by up to 40 changes with times relative to the start. Use **Previous page** and **Next page** to browse. A dash means the field has yet to report a value or has become unavailable. The screen retains the last recording while the app process is running. Starting another recording replaces it.
 
 The file also contains both full `currentGraphicalContext` structures under `cid` (`HMIContext`, `HMI_CID`) and `cid2` (`HMIContext2`, instance `1`). A parking overlay may leave the reported context unchanged.
+
+To compare a working camera with the app request, keep **Factory trace** running. Open and close Parking View with the BMW button, then return to the main menu and run **Test opening Parking View** or one of the video tests. The trace records both runs in order and marks the start of the programmatic test, its SDK calls and replies. **Activation source** is XView3D's `FeedbackSA2`. **Handshake**, **Camera link**, and **Stream info** show what the camera interfaces reported. Stream info describes the video format, so compare it with the player and display states and what appeared on the display.
 
 **Live diagnostics** displays the central display context, the selected mode and camera, the parking layout, the 3D availability flag, XView3D and ICAM2 state, player state, watchdog state and parking pop-ups. The app keeps its subscriptions while its process is running, including when the factory screen has taken focus.
 

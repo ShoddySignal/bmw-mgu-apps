@@ -6,7 +6,8 @@ const { EventEmitter } = require('node:events');
 const Car = require('../kit/runtime/car');
 const app = require('../apps/parking_camera_assist/app.json');
 const { FIELDS, SOURCES, CAMERAS, MODES, PERSPECTIVES, CLIENT_TYPES, SIMPLE,
-    parkingView, selection, freeView, direct, menuOpen } = require('../apps/parking_camera_assist/plans');
+    CAMERA_ROUTES, PLAYER_CHOICES, parkingView, parkingViewVideo, parkingViewCamera,
+    selection, freeView, direct, menuOpen } = require('../apps/parking_camera_assist/plans');
 const { Probe } = require('../apps/parking_camera_assist/probe');
 const { bindUi } = require('../apps/parking_camera_assist/ui');
 
@@ -106,7 +107,8 @@ test('manifest covers each request and subscribed field, including all eight fre
     assert.deepEqual(CAMERAS.map(([name, value], row) => freeView(row) && value).filter(Boolean),
         [7, 8, 9, 10, 11, 12, 13, 14]);
     const options = { MODE_PICK: MODES.map((row) => row[2]), CAMERA_PICK: CAMERAS.map((row) => row[2]),
-        RAW_PICK: PERSPECTIVES.map((row) => row[0]), CLIENT_PICK: CLIENT_TYPES.map((row) => row[2]) };
+        RAW_PICK: PERSPECTIVES.map((row) => row[0]), CLIENT_PICK: CLIENT_TYPES.map((row) => row[2]),
+        PARK_CAMERA_ROUTE: CAMERA_ROUTES, PARK_PLAYER_PICK: PLAYER_CHOICES };
     for (const [, id, , rows] of app.screens.flatMap((screen) => screen.items).filter((item) => item[0] === 'dropdown')) {
         assert.deepEqual(rows, options[id]);
     }
@@ -317,15 +319,24 @@ test('factory trace shows camera mode changes even at the same perspective and C
     const free = Object.assign({}, parking, { mode: 'FREE_CAMERA' });
     h.emit('cid', 'currentGraphicalContext', { visibleContext: 20251 });
     h.emit('xview', 'CurrentState', parking);
+    h.emit('xview', 'FeedbackSA2', 0);
+    h.emit('xview', 'Handshake', 0);
     h.probe.startTrace();
+    h.emit('xview', 'FeedbackSA2', 3);
+    h.emit('xview', 'Handshake', 1);
     h.emit('xview', 'PerspectiveChangeTriggered', { xView3DState: free });
     h.emit('xview', 'CurrentState', free);
     h.emit('icam', 'currentState', free);
+    h.emit('icam', 'streamInfo', { imageWidth: 1280, imageHeight: 480, framesPerSecond: 30 });
     h.emit('xview', 'CurrentState', free);
+    assert.equal(h.probe.trace.initial['Activation source'], 'NO_ACTIVATION');
     assert.deepEqual(h.probe.trace.changes.map(({ label, text }) => [label, text]), [
+        ['Activation source', 'BUTTON_ACTIVATION'],
+        ['Handshake', 'ON'],
         ['XView3D change', 'TOPREARVIEW / FREE_CAMERA / 0'],
         ['XView3D', 'TOPREARVIEW / FREE_CAMERA / 0'],
         ['ICAM2', 'TOPREARVIEW / FREE_CAMERA / 0'],
+        ['Stream info', '1280x480 @ 30 fps'],
     ]);
 });
 
@@ -349,6 +360,7 @@ test('Parking View requests only the complete factory context and records even a
     assert.deepEqual(names(h), []);
     h.emit('cid', field, target);
     h.emit('cid', field, review);
+    h.probe.startTrace();
     await h.ui.handlers.OPEN_PARKING_VIEW();
     assert.equal(h.ui.screen, 'REVIEW');
     assert.deepEqual(names(h), []);
@@ -357,6 +369,13 @@ test('Parking View requests only the complete factory context and records even a
     assert.ok(h.logs.some((line) => line.event === 'send' && line.instance === 'HMI_CID' && line.methodId === '0x0005'));
     assert.ok(h.logs.some((line) => line.event === 'cid-result' && line.observed && line.after === review.visibleContext));
     assert.ok(h.writes.some(([key, value]) => key === 'REVIEW_RESULT' && value.includes('20251 observed')));
+    assert.deepEqual(h.probe.trace.changes.map(({ label, text }) => [label, text]), [
+        ['Test', 'Test opening Parking View'],
+        ['Send', 'HMIControl.requestGraphicalContext'],
+        ['CID screen', '20251'],
+        ['CID screen', '50152'],
+        ['Reply', 'HMIControl.requestGraphicalContext OK'],
+    ]);
 });
 
 test('Parking View distinguishes an HMI refusal from a visible selection and blocks a request already on its target', async () => {
@@ -372,4 +391,141 @@ test('Parking View distinguishes an HMI refusal from a visible selection and blo
     await h.probe.run(h.probe.parkingView, true, front);
     assert.deepEqual(h.calls, [{ key: 'cidControl', method: 'requestGraphicalContext', args: { initiator: 1, context: target } }]);
     assert.match(h.probe.status, /NOT_ALLOWED.*20251 not observed/);
+});
+
+test('protected video starts only after Parking View opens and reports no data before cleanup', async (t) => {
+    const field = 'currentGraphicalContext';
+    const target = { visibleContext: 20251, focusIndex: 1, listIndex: 0 };
+    const h = await harness({
+        reply(probe, method) {
+            if (method === 'requestGraphicalContext') return { errorCode: 'OK' };
+            if (method === 'startProtectedVideo') media(probe, 'parkPlayer', 'cameraPlayerState', 1);
+            if (method === 'stopVideo') media(probe, 'parkPlayer', 'cameraPlayerState', 0);
+        },
+        onDelay(probe, ms) {
+            if (ms === 150) {
+                assert.deepEqual(names(h), ['requestGraphicalContext']);
+                h.ui.screen = 'FACTORY_CAMERA';
+                media(probe, 'cid', field, target);
+            }
+            h.parked();
+        },
+    });
+    const host = { log: h.log, ui: h.ui, app: new EventEmitter() };
+    bindUi(host, h.probe);
+    t.after(() => host.app.emit('shutdown'));
+    h.parked();
+    h.emit('cid', field, target);
+    h.emit('cid', field, { visibleContext: 50152 });
+    h.emit('parkPlayer', 'cameraPlayerState', 'VIDEO_IDLE');
+    await h.ui.handlers.PARK_PROTECTED_VIDEO();
+    await h.ui.handlers.RUN_NAMES();
+    assert.deepEqual(names(h), ['requestGraphicalContext', 'startProtectedVideo', 'stopVideo']);
+    assert.match(h.probe.status, /OK.*Video start replied.*VIDEO_NO_DATA.*20251 observed/);
+    assert.ok(h.logs.some((line) => line.event === 'video-result' && line.player === 1));
+});
+
+test('DAS video stays off without the target CID and skips cleanup after leaving and reopening Parking View', async () => {
+    const field = 'currentGraphicalContext';
+    const target = { visibleContext: 20251, focusIndex: 1, listIndex: 0 };
+    const other = { visibleContext: 50152 };
+    let open = false;
+    const h = await harness({
+        reply(probe, method) {
+            if (method === 'requestGraphicalContext') {
+                if (open) media(probe, 'cid', field, target);
+                return { errorCode: 0 };
+            }
+            if (method === 'startVideo') media(probe, 'das', 'dasVideoState', 'VIDEO_ACTIVE');
+        },
+        onDelay(probe, ms) {
+            if (open && ms === 4000) {
+                media(probe, 'cid', field, other);
+                media(probe, 'cid', field, target);
+            }
+            h.parked();
+        },
+    });
+    h.parked();
+    h.emit('cid', field, target);
+    h.emit('cid', field, other);
+    h.emit('das', 'dasVideoState', 'VIDEO_IDLE');
+    await h.probe.run(parkingViewVideo(h.probe.parkingView, true), false, front);
+    assert.deepEqual(names(h), ['requestGraphicalContext']);
+    assert.match(h.probe.status, /CID 20251 did not open/);
+    open = true;
+    await h.probe.run(parkingViewVideo(h.probe.parkingView, true), false, front);
+    assert.deepEqual(names(h), ['requestGraphicalContext', 'requestGraphicalContext', 'startVideo']);
+    assert.deepEqual(h.calls[2].args, { watchdog: 'WD_ACTIVE' });
+    assert.ok(h.logs.some((line) => line.event === 'video-stop-skipped' && line.reason === 'Parking View closed'));
+});
+
+test('camera test captures one factory mode, confirms it before video, restores OFF and keeps the result', async (t) => {
+    const field = 'currentGraphicalContext';
+    const cid = { visibleContext: 20251, focusIndex: 9, listIndex: 2 };
+    const outside = { visibleContext: 50152 };
+    const factory = { application: 1, mode: 3, perspective: 4 };
+    const off = { application: 0, mode: 50, perspective: 7 };
+    const h = await harness({
+        reply(probe, method, args) {
+            if (method === 'requestGraphicalContext') {
+                h.ui.screen = 'FACTORY_CAMERA';
+                media(probe, 'cid', field, cid);
+                return { errorCode: 0 };
+            }
+            if (method === 'changePerspective') media(probe, 'xview', 'CurrentState', args.xView3DState);
+            if (method === 'startProtectedVideo') media(probe, 'parkPlayer', 'cameraPlayerState', 'VIDEO_ACTIVE');
+        },
+        onDelay() { h.parked(); },
+    });
+    const host = { log: h.log, ui: h.ui, app: new EventEmitter() };
+    bindUi(host, h.probe);
+    t.after(() => host.app.emit('shutdown'));
+    h.parked();
+    h.emit('cid', field, outside);
+    await h.ui.handlers.GO_PARK_TESTS();
+    await h.ui.handlers.PARK_CAPTURE_CAMERA();
+    h.ui.screen = 'FACTORY_CAMERA';
+    h.emit('cid', field, cid);
+    h.emit('xview', 'CurrentState', factory);
+    h.emit('cid', field, outside);
+    h.emit('xview', 'CurrentState', off);
+    h.emit('parkPlayer', 'cameraPlayerState', 'VIDEO_IDLE');
+    await h.ui.handlers.GO_PARK_TESTS();
+    await h.ui.handlers.PARK_PLAYER_PICK({ row: 1 });
+    await h.ui.handlers.PARK_REVIEW_CAMERA();
+    assert.deepEqual(h.calls, []);
+    await h.ui.handlers.RUN_NUMBERS();
+    assert.deepEqual(names(h), ['requestGraphicalContext', 'changePerspective', 'startProtectedVideo', 'stopVideo', 'changePerspective']);
+    assert.deepEqual(h.calls[1].args.xView3DState, factory);
+    assert.deepEqual(h.calls[4].args.xView3DState, off);
+    assert.match(h.probe.results[0].status, /Camera mode confirmed.*VIDEO_ACTIVE/);
+    assert.deepEqual(h.probe.results[0].cameras.xview, factory);
+    await h.ui.handlers.GO_TEST_HISTORY();
+    assert.ok(h.writes.some(([key, value]) => key === 'HISTORY_LABEL' && value === 'XView3D + Protected video'));
+});
+
+test('ICAM2 holds one indirect cookie and skips video when camera readback does not confirm the mode', async () => {
+    const field = 'currentGraphicalContext';
+    const cid = { visibleContext: 20251, focusIndex: 1, listIndex: 0 };
+    const reference = { view: parkingView(cid), state: { application: 'TOPREARVIEW', mode: 'AUTOMATIC_CAMERA', perspective: 0 } };
+    const h = await harness({
+        reply(probe, method) {
+            if (method === 'requestGraphicalContext') {
+                media(probe, 'cid', field, cid);
+                return { errorCode: 'OK' };
+            }
+            if (method === 'clientAttach') return { cookie: 765 };
+        },
+        onDelay() { h.parked(); },
+    });
+    h.parked();
+    h.emit('cid', field, { visibleContext: 50152 });
+    h.emit('das', 'dasVideoState', 'VIDEO_IDLE');
+    await h.probe.run(parkingViewCamera(reference, 1, 2), false, front);
+    assert.deepEqual(names(h), ['requestGraphicalContext', 'clientAttach', 'changeState', 'clientDetach']);
+    assert.deepEqual(h.calls[1].args, { type: 'CLIENT_INDIRECT' });
+    assert.deepEqual(h.calls[2].args, { cookie: 765, desiredState: reference.state });
+    assert.deepEqual(h.calls[3].args, { cookie: 765 });
+    assert.match(h.probe.status, /Requested camera mode not observed/);
 });

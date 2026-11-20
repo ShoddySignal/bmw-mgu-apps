@@ -1,6 +1,7 @@
 'use strict';
 
-const { MODES, CAMERAS, PERSPECTIVES, CLIENT_TYPES, SIMPLE, selection, freeView, direct, menuOpen, describe } = require('./plans');
+const { MODES, CAMERAS, PERSPECTIVES, CLIENT_TYPES, SIMPLE, CAMERA_ROUTES, PLAYER_CHOICES,
+    parkingViewVideo, parkingViewCamera, selection, freeView, direct, menuOpen, describe } = require('./plans');
 const TRACE_ROWS = ['TRACE_ROW_1', 'TRACE_ROW_2', 'TRACE_ROW_3', 'TRACE_ROW_4'];
 
 function format(value) {
@@ -15,7 +16,7 @@ function perspective(value) {
 
 function bindUi(ctx, probe) {
     const ui = ctx.ui;
-    const rows = { mode: 0, camera: 0, raw: 0, client: 0 };
+    const rows = { mode: 0, camera: 0, raw: 0, client: 0, parkRoute: 0, parkPlayer: 0 };
     const push = {};
     let angle = 0;
     let pending = null;
@@ -23,6 +24,7 @@ function bindUi(ctx, probe) {
     let rendering = false;
     let openingReview = false;
     let tracePage = 0;
+    let historyPage = 0;
 
     const selectRow = (id, key, options) => ui.onClick(id, (event) => {
         if (Number.isInteger(event.row) && options[event.row]) rows[key] = event.row;
@@ -55,7 +57,8 @@ function bindUi(ctx, probe) {
             : 'Start recording, then open and close the factory camera.');
         if (initial) {
             putText(tasks, 'TRACE_BASELINE', 'Before: CID ' + initial['CID screen'] + ', app/state ' + initial['CID app/state'] +
-                ' | Park ' + initial.Park);
+                ' | Park ' + initial.Park + ' | Activation ' + initial['Activation source'] + ' | Handshake ' + initial.Handshake +
+                ' | Stream ' + initial['Stream info']);
         }
         visible(tasks, 'TRACE_BASELINE', !!initial);
         TRACE_ROWS.forEach((key, i) => {
@@ -80,6 +83,29 @@ function bindUi(ctx, probe) {
             putText(tasks, 'STATUS', probe.status + (seconds ? ' Trace: ' + seconds + ' s' : ''));
         }
         if (ui.isVisible('TRACE_RESULTS')) renderTrace(tasks);
+        if (ui.isVisible('PARK_TESTS')) {
+            const reference = probe.parkingCamera;
+            const waiting = probe.cameraCapture && probe.traceRemaining();
+            const hint = waiting ? 'Open Parking View with the BMW button, wait for the image and close it.'
+                : 'Capture the factory camera mode first.';
+            putText(tasks, 'PARK_CAMERA_REFERENCE', reference ? 'Captured ' + perspective(reference.state) : hint);
+            enable(tasks, 'PARK_CAPTURE_CAMERA', !probe.busy);
+            enable(tasks, 'PARK_REVIEW_CAMERA', !!reference && !probe.busy);
+        }
+        if (ui.isVisible('TEST_HISTORY')) {
+            const count = probe.results.length;
+            const entry = probe.results[historyPage];
+            putText(tasks, 'HISTORY_POSITION', entry ? 'Result ' + (historyPage + 1) + '/' + count : 'Run a test to see its result.');
+            putText(tasks, 'HISTORY_LABEL', entry ? entry.label : '');
+            putText(tasks, 'HISTORY_RESULT', entry ? entry.status : '');
+            const cameras = entry && entry.cameras;
+            if (cameras) putText(tasks, 'HISTORY_CAMERAS', 'XView3D ' + perspective(cameras.xview) + ' | ICAM2 ' + perspective(cameras.icam));
+            visible(tasks, 'HISTORY_CAMERAS', !!cameras);
+            visible(tasks, 'HISTORY_OLDER', count > 1);
+            visible(tasks, 'HISTORY_NEWER', count > 1);
+            enable(tasks, 'HISTORY_OLDER', historyPage + 1 < count);
+            enable(tasks, 'HISTORY_NEWER', historyPage > 0);
+        }
         if (ui.isVisible('CAMERAS')) enable(tasks, 'ENTER_FREE', !!freeView(rows.camera));
         if (ui.isVisible('RAW')) {
             putText(tasks, 'RAW_INDEX', 'Perspective byte: ' + angle);
@@ -153,13 +179,25 @@ function bindUi(ctx, probe) {
     const navigation = {
         GO_TRACE: 'TRACE_RESULTS', GO_MODES: 'MODES', GO_CAMERAS: 'CAMERAS',
         GO_ROUTES: 'ROUTES', GO_RAW: 'RAW', GO_STATE: 'DIAGNOSTICS',
+        GO_PARK_TESTS: 'PARK_TESTS',
     };
     Object.keys(navigation).forEach((button) => ui.onClick(button, () => ui.open(navigation[button])));
-    ui.onClick('OPEN_PARKING_VIEW', () => {
-        if (probe.parkingView) return review(probe.parkingView);
+    function reviewParkingView(plan) {
+        if (plan) return review(plan);
         probe.status = 'Open and close Parking View once with the BMW button to capture CID 20251.';
         return render();
+    }
+    ui.onClick('OPEN_PARKING_VIEW', () => reviewParkingView(probe.parkingView));
+    ui.onClick('PARK_PROTECTED_VIDEO', () => reviewParkingView(parkingViewVideo(probe.parkingView, false)));
+    ui.onClick('PARK_DAS_VIDEO', () => reviewParkingView(parkingViewVideo(probe.parkingView, true)));
+    ui.onClick('PARK_CAPTURE_CAMERA', () => { probe.armCameraCapture(); return render(); });
+    ui.onClick('PARK_REVIEW_CAMERA', () => review(parkingViewCamera(probe.parkingCamera, rows.parkRoute, rows.parkPlayer)));
+    ui.onClick('GO_TEST_HISTORY', () => { historyPage = 0; return ui.open('TEST_HISTORY'); });
+    ui.onClick('HISTORY_OLDER', () => {
+        if (historyPage + 1 < probe.results.length) historyPage++;
+        return render();
     });
+    ui.onClick('HISTORY_NEWER', () => { historyPage = Math.max(0, historyPage - 1); return render(); });
     ui.onClick('TRACE_START', () => {
         if (probe.traceRemaining()) return;
         tracePage = 0;
@@ -176,6 +214,8 @@ function bindUi(ctx, probe) {
     selectRow('CAMERA_PICK', 'camera', CAMERAS);
     selectRow('RAW_PICK', 'raw', PERSPECTIVES);
     selectRow('CLIENT_PICK', 'client', CLIENT_TYPES);
+    selectRow('PARK_CAMERA_ROUTE', 'parkRoute', CAMERA_ROUTES);
+    selectRow('PARK_PLAYER_PICK', 'parkPlayer', PLAYER_CHOICES);
 
     ui.onClick('HMI_MODE', () => review(selection('mode', rows.mode, false)));
     ui.onClick('ASSIST_MODE', () => review(selection('mode', rows.mode, true)));

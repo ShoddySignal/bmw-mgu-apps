@@ -1,13 +1,16 @@
 'use strict';
 
-const { SOURCES, FIELDS, VIDEO_STATES, SIMPLE, parkingView, selection, call } = require('./plans');
+const { SOURCES, FIELDS, VIDEO_STATES, SIMPLE, PARKING_VIEW_CID, cameraState, sameCameraState,
+    parkingView, selection, call } = require('./plans');
 const { FactoryTrace, DURATION_MS } = require('./trace');
 const CALL_TIMEOUT = 1500;
 const SAMPLE_AGE = 3500;
 const VIDEO_TEST_MS = 4000;
 const CID_FIELD = 'currentGraphicalContext';
+const CAMERA_FIELDS = { xview: 'CurrentState', icam: 'currentState' };
 const HMI_RESULTS = ['OK', 'ABORTED', 'CONTEXT_NOT_AVAILABLE', 'NO_CHANGE', 'NOT_ALLOWED',
     'NOT_FOCUSABLE', 'NOT_FOUND', 'NOT_POSSIBLE', 'OUT_OF_RANGE', 'UNSUPPORTED_PARAMETER'];
+const VIDEO_STATE_NAMES = ['VIDEO_IDLE', 'VIDEO_NO_DATA', 'VIDEO_ACTIVE'];
 
 function json(value) {
     return JSON.stringify(value === undefined ? null : value, (key, item) =>
@@ -26,6 +29,14 @@ function monotonicMs() {
 
 function is(value, name, code) { return value === name || value === code; }
 function message(error) { return error && error.message ? error.message : String(error); }
+function hmiResult(reply) {
+    const code = reply && typeof reply === 'object' ? reply.errorCode : reply;
+    return Number.isInteger(code) ? HMI_RESULTS[code] || String(code) : code;
+}
+
+function videoStateName(value) {
+    return value == null ? 'unavailable' : (Number.isInteger(value) && VIDEO_STATE_NAMES[value]) || String(value);
+}
 
 class Probe {
     constructor(signals, log, decodeSelection, now = monotonicMs, delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
@@ -40,6 +51,9 @@ class Probe {
         this.sequence = 0;
         this.trace = new FactoryTrace();
         this.parkingView = null;
+        this.parkingCamera = null;
+        this.cameraCapture = null;
+        this.results = [];
         this.cidAttempt = null;
         this.busy = false;
         this.closed = false;
@@ -81,6 +95,7 @@ class Probe {
         if (this.closed || this.provider[key] === up) return;
         this.provider[key] = up;
         if (!up) {
+            if (key === 'cid' && this.cidAttempt && this.cidAttempt.observed) this.cidAttempt.leftTarget = true;
             const fields = Object.keys(this.samples[key] || {});
             delete this.samples[key];
             const at = this.now();
@@ -104,10 +119,12 @@ class Probe {
         if (key === 'cid' && field === CID_FIELD) {
             const plan = parkingView(value);
             if (plan) this.parkingView = plan;
-            if (this.cidAttempt && value && value.visibleContext === this.cidAttempt.target) {
-                this.cidAttempt.observed = true;
+            if (this.cidAttempt) {
+                if (value && value.visibleContext === this.cidAttempt.target) this.cidAttempt.observed = true;
+                else if (this.cidAttempt.observed) this.cidAttempt.leftTarget = true;
             }
         }
+        if ((key === 'cid' && field === CID_FIELD) || CAMERA_FIELDS[key] === field) this.captureCamera(at);
         if (!previous || previous.data !== data) {
             if (this.busy || this.trace.active(at)) this.record('signal', { source: key, field, value });
             this.trace.observe(key, field, value, at);
@@ -177,12 +194,44 @@ class Probe {
 
     traceRemaining() { return this.trace.remaining(this.now()); }
 
+    armCameraCapture() {
+        if (this.busy || this.currentCid() === PARKING_VIEW_CID) return;
+        this.parkingCamera = null;
+        this.cameraCapture = { startedAt: this.now(), openedAt: null };
+        if (!this.traceRemaining()) this.startTrace();
+    }
+
+    captureCamera(at) {
+        const capture = this.cameraCapture;
+        if (!capture || this.busy || at - capture.startedAt >= DURATION_MS) return;
+        if (this.currentCid() !== PARKING_VIEW_CID) {
+            if (capture.openedAt !== null) this.cameraCapture = null;
+            return;
+        }
+        if (capture.openedAt === null) capture.openedAt = at;
+        const view = parkingView(this.value('cid', CID_FIELD));
+        if (!view) return;
+        const earliest = Math.max(capture.startedAt, capture.openedAt - 1000);
+        for (const source of Object.keys(CAMERA_FIELDS)) {
+            const sample = this.sample(source, CAMERA_FIELDS[source]);
+            if (!this.available(source) || !sample || sample.at < earliest) continue;
+            const state = cameraState(sample.value);
+            if (!state || state.application === 'OFF' || state.mode === 'SIGNAL_UNFILLED' || state.perspective === 255) continue;
+            if (!this.parkingCamera || this.parkingCamera.source !== source || !sameCameraState(state, this.parkingCamera.state)) {
+                this.parkingCamera = { source, state, view };
+                this.record('factory-camera-reference', { source, state, context: view.build(false).params.context });
+            }
+            return;
+        }
+    }
+
     record(event, details) {
         this.log.info('camera-assist ' + json(Object.assign({ event, test: this.testId || null }, details)));
     }
 
     async invoke(action, check, onSend) {
         const svc = SOURCES[action.source];
+        const callName = svc.iface.split('.').pop() + '.' + action.method;
         const details = {
             interface: svc.iface, service: '0x' + svc.id, instance: svc.instance || '1', method: action.method,
             methodId: '0x' + action.id, params: action.params, fireAndForget: action.fireAndForget,
@@ -194,11 +243,14 @@ class Probe {
             sent = true;
             if (onSend) onSend();
             this.record('send', details);
+            this.trace.mark('Send', callName, this.now());
         };
         try {
             if (!this.available(action.source)) throw new Error('Provider unavailable · ' + action.source);
             const response = await this.signals.call(this.links[action.source].proxy, action.method, action.params, CALL_TIMEOUT, before);
             this.record(action.fireAndForget ? 'dispatched' : 'reply', Object.assign({}, details, { response }));
+            const result = action.source === 'cidControl' ? hmiResult(response) : null;
+            this.trace.mark(action.fireAndForget ? 'Dispatched' : 'Reply', callName + (result == null ? '' : ' ' + result), this.now());
             return response;
         } catch (error) {
             this.record('call-error', Object.assign({}, details, { sent, error: message(error) }));
@@ -212,8 +264,8 @@ class Probe {
         if (issue) throw new Error(issue);
     }
 
-    async waitFor(observed, error) {
-        const deadline = this.now() + 1800;
+    async waitFor(observed, error, timeout = 1800) {
+        const deadline = this.now() + timeout;
         while (!observed() && this.now() < deadline) {
             this.checkParked();
             await this.delay(150);
@@ -249,6 +301,86 @@ class Probe {
             ' | ' + result.target + (result.observed ? ' observed' : ' not observed');
     }
 
+    checkVideoIdle(source) {
+        const field = VIDEO_STATES[source];
+        const state = this.value(source, field);
+        if (!is(state, 'VIDEO_IDLE', 0)) throw new Error(field + ' is ' + videoStateName(state) + '; needs VIDEO_IDLE');
+        if (this.parkingMenuRequested()) throw new Error('Close the factory parking screen before a player test');
+    }
+
+    stillOnTestCid() {
+        return this.cidAttempt && !this.cidAttempt.leftTarget && this.currentCid() === this.cidAttempt.target;
+    }
+
+    async attachIcam(action, send, check) {
+        const reply = await send(action, check);
+        const cookie = reply && typeof reply === 'object' ? reply.cookie : reply;
+        if (!Number.isInteger(cookie) || cookie < 0 || cookie > 0xffffffff) throw new Error('No valid ICAM2 client cookie in reply');
+        this.releaseCamera = () => this.invoke(call('icam', 'clientDetach', '0006', { cookie }));
+        return cookie;
+    }
+
+    async requestCidCamera(camera, numeric, send) {
+        const { source, desired } = camera;
+        const read = (key) => this.value(key, CAMERA_FIELDS[key]);
+        const check = () => {
+            if (!this.stillOnTestCid()) throw new Error('Parking View closed before the camera request');
+            if (this.parkingMenuRequested()) throw new Error('Factory parking view has the cameras');
+            if (Object.keys(CAMERA_FIELDS).some((key) => {
+                const value = read(key);
+                return value && value.application != null && !is(value.application, 'OFF', 0) &&
+                    !is(value.application, 'SIGNAL_UNFILLED', 255) && !sameCameraState(value, desired);
+            })) throw new Error('Another camera mode is already active');
+        };
+        check();
+        if (Object.keys(CAMERA_FIELDS).some((key) => sameCameraState(read(key), desired))) {
+            this.status += ' | Camera mode already matched';
+            return;
+        }
+        const state = cameraState(desired, numeric);
+        if (source === 'icam') {
+            const cookie = await this.attachIcam(call('icam', 'clientAttach', '0005', { type: numeric ? 1 : 'CLIENT_INDIRECT' }), send, check);
+            await send(call('icam', 'changeState', '0009', { cookie, desiredState: state }), check);
+        } else {
+            const previous = cameraState(read('xview'), numeric);
+            if (!previous || !is(previous.application, 'OFF', 0)) throw new Error('XView3D has not reported a restorable OFF state');
+            await send(call('xview', 'changePerspective', '0014', { xView3DState: state }), check);
+            const canRestore = () => this.stillOnTestCid() && !this.parkingIssue() && !this.parkingMenuRequested() &&
+                sameCameraState(read('xview'), desired);
+            this.releaseCamera = async () => {
+                if (canRestore()) await this.invoke(call('xview', 'changePerspective', '0014', { xView3DState: previous }), () => {
+                    if (!canRestore()) throw new Error('Camera state changed before restore');
+                });
+            };
+        }
+        await this.waitFor(() => this.stillOnTestCid() && Object.keys(CAMERA_FIELDS).some((key) => sameCameraState(read(key), desired)),
+            'Requested camera mode not observed', 3000);
+        this.status += ' | Camera mode confirmed';
+    }
+
+    async startCidVideo(plan, numeric, send) {
+        const stillOnTarget = () => this.stillOnTestCid();
+        if (stillOnTarget() && is(this.value(plan.video, VIDEO_STATES[plan.video]), 'VIDEO_ACTIVE', 2)) {
+            this.status += ' | Player already VIDEO_ACTIVE';
+            return;
+        }
+        await send(plan.build(numeric), () => {
+            if (!stillOnTarget()) throw new Error('Parking View closed before the video request');
+            this.checkVideoIdle(plan.video);
+        });
+        this.release = () => this.stopVideo(plan.video, stillOnTarget);
+        this.status += ' | Video start replied';
+    }
+
+    reportVideo(source) {
+        const player = source ? this.value(source, VIDEO_STATES[source]) : undefined;
+        const display = this.value('display', 'videoDisplayStatus') || {};
+        const camera = this.value('icam', 'cameraProxyState');
+        this.record('video-result', { source, player, display: display.cameraPlayerState, camera });
+        if (source) this.status += ' | Player: ' + videoStateName(player);
+        this.status += ' | Display: ' + videoStateName(display.cameraPlayerState);
+    }
+
     async run(plan, numeric, foreground) {
         if (this.closed || this.busy || !plan) return;
         if (!foreground()) {
@@ -259,9 +391,11 @@ class Probe {
         }
 
         this.busy = true;
+        this.cameraCapture = null;
         this.testId = ++this.sequence;
         this.status = 'Running · ' + plan.label;
         this.record('test-start', { label: plan.label, enumEncoding: numeric ? 'number' : 'name', state: this.snapshot() });
+        this.trace.mark('Test', plan.label, this.now());
         let sent = false;
         const markSent = () => { sent = true; };
         try {
@@ -289,57 +423,69 @@ class Probe {
                     is(this.value('hmi', 'selectedCameraMode'), 'FREE_CAMERA', 3), 'No new 3D mode notification observed');
             }
             if (plan.attach) {
-                const reply = await send(plan.attach(numeric));
-                const cookie = reply && typeof reply === 'object' ? reply.cookie : reply;
-                if (!Number.isInteger(cookie) || cookie < 0 || cookie > 0xffffffff) throw new Error('No valid ICAM2 client cookie in reply');
-                this.release = () => this.invoke(call('icam', 'clientDetach', '0006', { cookie }));
+                const cookie = await this.attachIcam(plan.attach(numeric), send);
                 step = plan.build(numeric, cookie);
             }
             const reply = await send(step, () => {
                 if (plan.visibleContext !== undefined) this.beginCidAttempt(plan.visibleContext);
-                if (!plan.video) return;
-                const field = VIDEO_STATES[plan.video];
-                if (!is(this.value(plan.video, field), 'VIDEO_IDLE', 0)) {
-                    throw new Error('Wait for ' + field + ' to report VIDEO_IDLE');
-                }
-                if (this.parkingMenuRequested()) throw new Error('Close the factory parking screen before a player test');
+                if (plan.video) this.checkVideoIdle(plan.video);
             });
             if (plan.video) this.release = () => this.stopVideo(plan.video);
             if (this.cidAttempt) {
-                const code = reply && typeof reply === 'object' ? reply.errorCode : reply;
-                const status = Number.isInteger(code) ? HMI_RESULTS[code] || String(code) : code;
+                const status = hmiResult(reply);
                 this.status = 'HMI reply: ' + (status == null ? 'missing errorCode' : String(status));
+                if (plan.cameraAfterOpening || plan.videoAfterOpening) {
+                    if (status != null && status !== 'OK' && status !== 'NO_CHANGE') {
+                        throw new Error(this.status + ' | Follow-up skipped');
+                    }
+                    await this.waitFor(() => this.cidAttempt.observed, 'CID ' + plan.visibleContext + ' did not open');
+                    if (plan.cameraAfterOpening) await this.requestCidCamera(plan.cameraAfterOpening, numeric, send);
+                    if (plan.videoAfterOpening) await this.startCidVideo(plan.videoAfterOpening, numeric, send);
+                }
             } else {
                 this.status = (step.fireAndForget ? 'Dispatched' : 'Replied') + ' · ' + plan.label;
             }
         } catch (error) {
             this.status = (sent ? 'Test incomplete' : 'Not sent') + ' · ' + message(error);
             this.record('test-error', { sent, error: message(error) });
+            this.trace.mark(sent ? 'Test error' : 'Not sent', message(error), this.now());
         } finally {
             if (sent && !this.closed) await this.delay(VIDEO_TEST_MS);
+            const cameras = plan.visibleContext === undefined ? null : {
+                xview: this.value('xview', CAMERA_FIELDS.xview),
+                icam: this.value('icam', CAMERA_FIELDS.icam),
+            };
+            if (sent && (plan.videoAfterOpening || plan.cameraAfterOpening)) {
+                this.reportVideo(plan.videoAfterOpening && plan.videoAfterOpening.video);
+            }
             await this.releaseTest();
             this.finishCidAttempt();
             this.record('test-end', { result: this.status, state: this.snapshot() });
+            this.results.unshift({ label: plan.label, status: this.status, cameras });
+            if (this.results.length > 12) this.results.pop();
             this.testId = null;
             this.busy = false;
         }
     }
 
     async releaseTest() {
-        const release = this.release;
-        if (!release) return;
+        const releases = [this.release, this.releaseCamera].filter(Boolean);
         this.release = null;
-        try { await release(); }
-        catch (error) {
-            this.status = 'Cleanup unconfirmed · ' + message(error);
-            this.record('cleanup-error', { error: message(error) });
+        this.releaseCamera = null;
+        for (const release of releases) {
+            try { await release(); }
+            catch (error) {
+                this.status += ' | Cleanup unconfirmed · ' + message(error);
+                this.record('cleanup-error', { error: message(error) });
+            }
         }
     }
 
-    async stopVideo(source) {
+    async stopVideo(source, stillOnTarget) {
         const state = this.value(source, VIDEO_STATES[source]);
         const active = is(state, 'VIDEO_ACTIVE', 2) || is(state, 'VIDEO_NO_DATA', 1);
-        const issue = this.parkingIssue();
+        const parkingIssue = () => this.parkingIssue() || (stillOnTarget && !stillOnTarget() ? 'Parking View closed' : null);
+        const issue = parkingIssue();
         const factory = this.parkingMenuRequested();
         if (!active || issue || factory) {
             this.record('video-stop-skipped', { source, state, reason: issue || (factory ? 'Factory parking view requested' : 'Player inactive or status unavailable') });
@@ -347,7 +493,7 @@ class Probe {
         }
         const id = source === 'das' ? '0009' : '0003';
         await this.invoke(call(source, 'stopVideo', id, {}), () => {
-            const reason = this.parkingIssue();
+            const reason = parkingIssue();
             if (reason || this.parkingMenuRequested()) throw new Error(reason || 'Factory parking view requested');
         });
     }

@@ -2,7 +2,7 @@
   "id": "parking_camera_assist",
   "title": "Parking Camera Assist",
   "description": "Test parking camera activation in iDrive 7 and record Panorama, 360, 3D and video service diagnostics.",
-  "version": "0.1.4",
+  "version": "0.1.7",
   "vendor": "ShoddySignal",
   "loggingId": "PKCA",
   "mguHmi": [
@@ -56,6 +56,9 @@
     "de.bmw.dass.XView3D": {
       "CurrentState": "rs",
       "PosAngleFreecamera": "rs",
+      "FeedbackSA2": "rs",
+      "Handshake": "rs",
+      "ActivationMode": "rs",
       "_methods": [
         "changePerspective"
       ],
@@ -67,6 +70,7 @@
     "de.bmw.infotainment.video.cameraproxy.ICAM2Proxy": {
       "currentState": "rs",
       "cameraProxyState": "rs",
+      "streamInfo": "rs",
       "_methods": [
         "clientAttach",
         "changeState",
@@ -131,11 +135,15 @@
           "STATUS",
           "Select a request or record factory camera changes."
         ],
+        ["button", "GO_PARK_TESTS", "Parking View camera tests"],
+        ["button", "GO_TEST_HISTORY", "Test results"],
         [
           "button",
           "OPEN_PARKING_VIEW",
           "Test opening Parking View"
         ],
+        ["button", "PARK_PROTECTED_VIDEO", "Parking View + protected video"],
+        ["button", "PARK_DAS_VIDEO", "Parking View + DAS video"],
         [
           "button",
           "GO_TRACE",
@@ -166,6 +174,31 @@
           "GO_STATE",
           "Live diagnostics"
         ]
+      ]
+    },
+    {
+      "name": "PARK_TESTS",
+      "title": "Parking View camera tests",
+      "kind": "menu",
+      "items": [
+        ["text3", "PARK_CAMERA_REFERENCE", "Capture the factory camera mode first."],
+        ["button", "PARK_CAPTURE_CAMERA", "Capture factory camera mode"],
+        ["dropdown", "PARK_CAMERA_ROUTE", "Request through", ["XView3D", "ICAM2 indirect"]],
+        ["dropdown", "PARK_PLAYER_PICK", "After camera mode", ["Observe camera only", "Protected video", "DAS video"]],
+        ["button", "PARK_REVIEW_CAMERA", "Review test"]
+      ]
+    },
+    {
+      "name": "TEST_HISTORY",
+      "title": "Parking View test results",
+      "kind": "menu",
+      "items": [
+        ["text", "HISTORY_POSITION", "Run a test to see its result."],
+        ["text", "HISTORY_LABEL", ""],
+        ["text3", "HISTORY_RESULT", ""],
+        ["text3", "HISTORY_CAMERAS", ""],
+        ["button", "HISTORY_OLDER", "Older result"],
+        ["button", "HISTORY_NEWER", "Newer result"]
       ]
     },
     {
