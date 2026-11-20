@@ -4,6 +4,8 @@ const SOURCES = {
     hmi: { iface: 'de.bmw.dass.parking.parkmenu.userinteraction.UserInteractionParkmenu', id: '3056' },
     menu: { iface: 'de.bmw.dass.parking.parkmenu.parkmenuandlayout.ParkmenuAndLayout', id: '3059' },
     cluster: { iface: 'de.bmw.dass.parking.ParkmenuInstrumentCluster', id: '3064' },
+    cid: { iface: 'de.bmw.infotainment.hmi.hmicontext.HMIContext', instance: 'HMI_CID' },
+    cid2: { iface: 'de.bmw.infotainment.hmi.hmicontext2.HMIContext2' },
     popup: { iface: 'de.bmw.dass.parking.ParkmenuTextForDisplayCid', id: '3076' },
     xview: { iface: 'de.bmw.dass.XView3D', id: '3003' },
     icam: { iface: 'de.bmw.infotainment.video.cameraproxy.ICAM2Proxy', id: 'F78A' },
@@ -20,6 +22,8 @@ const FIELDS = {
     hmi: ['selectedCameraMode', 'selectedCamera', 'automaticCameraSelected', 'operabilitySelectionBar'],
     menu: ['requestParkmenu'],
     cluster: ['parkmenuRequest'],
+    cid: ['currentGraphicalContext'],
+    cid2: ['currentGraphicalContext'],
     popup: ['displayPopUp'],
     xview: ['CurrentState', 'PosAngleFreecamera'],
     icam: ['currentState', 'cameraProxyState'],
@@ -87,7 +91,7 @@ function selection(kind, row, assist) {
     const method = (assist ? 'assistSelectCamera' : 'hmiSelectCamera') + (mode ? 'Mode' : '');
     const id = assist ? (mode ? '0016' : '0015') : (mode ? '0007' : '0006');
     return {
-        label: (assist ? 'Assist without GPS / ' : 'HMI / ') + choice[2],
+        label: (assist ? 'Assist (activation point false) / ' : 'HMI / ') + choice[2],
         build(numeric) {
             const params = { [parameter]: enumeration(choice, numeric) };
             if (assist) params.activationPointReached = false;
@@ -118,7 +122,7 @@ function direct(row, perspective, client, icam) {
 }
 
 const SIMPLE = {
-    OPEN_MENU: { label: 'Request native parking menu', build: () => call('cluster', 'parkmenuRequestedByUser', '0005', {}, true) },
+    OPEN_MENU: { label: 'Send cluster parking request', build: () => call('cluster', 'parkmenuRequestedByUser', '0005', {}, true) },
     AUTO_CAMERA: {
         label: 'Select automatic camera',
         build: () => call('hmi', 'hmiSelectAutomaticCamera', '0008', { selectAutomaticCamera: true }, true),
@@ -148,7 +152,7 @@ const SIMPLE = {
 function menuOpen(modeRow) {
     const plan = selection('mode', modeRow, false);
     if (!plan) return null;
-    return Object.assign({}, plan, { label: 'Request menu / ' + MODES[modeRow][2], enterParkmenu: true });
+    return Object.assign({}, plan, { label: 'Cluster request / ' + MODES[modeRow][2], enterParkmenu: true });
 }
 
 function describe(plan, numeric) {

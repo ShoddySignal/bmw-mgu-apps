@@ -2,7 +2,7 @@
   "id": "parking_camera_assist",
   "title": "Parking Camera Assist",
   "description": "Test parking camera activation in iDrive 7 and record Panorama, 360, 3D and video service diagnostics.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "vendor": "ShoddySignal",
   "loggingId": "PKCA",
   "mguHmi": [
@@ -33,7 +33,16 @@
       "_methods": [
         "parkmenuRequestedByUser"
       ],
-      "_optional": "Native menu request"
+      "_optional": "Instrument cluster parking request"
+    },
+    "de.bmw.infotainment.hmi.hmicontext.HMIContext": {
+      "_instances": "HMI_CID",
+      "currentGraphicalContext": "rs",
+      "_optional": "Central display context"
+    },
+    "de.bmw.infotainment.hmi.hmicontext2.HMIContext2": {
+      "currentGraphicalContext": "rs",
+      "_optional": "Central display context (HMIContext2)"
     },
     "de.bmw.dass.parking.ParkmenuTextForDisplayCid": {
       "displayPopUp": "rs",
@@ -119,6 +128,11 @@
         ],
         [
           "button",
+          "GO_TRACE",
+          "Factory trace"
+        ],
+        [
+          "button",
           "GO_MODES",
           "Screen modes"
         ],
@@ -130,7 +144,7 @@
         [
           "button",
           "GO_ROUTES",
-          "Open menu and video players"
+          "Cluster and video player tests"
         ],
         [
           "button",
@@ -139,14 +153,26 @@
         ],
         [
           "button",
-          "TRACE",
-          "Record factory controls for 90 s"
-        ],
-        [
-          "button",
           "GO_STATE",
           "Live diagnostics"
         ]
+      ]
+    },
+    {
+      "name": "TRACE_RESULTS",
+      "title": "Factory camera trace",
+      "kind": "menu",
+      "items": [
+        ["button", "TRACE_START", "Record for 90 s"],
+        ["button", "TRACE_STOP", "Stop recording"],
+        ["text3", "TRACE_STATUS", "Start recording, then open and close the factory camera."],
+        ["text3", "TRACE_BASELINE", ""],
+        ["text", "TRACE_ROW_1", ""],
+        ["text", "TRACE_ROW_2", ""],
+        ["text", "TRACE_ROW_3", ""],
+        ["text", "TRACE_ROW_4", ""],
+        ["button", "TRACE_PREVIOUS", "Previous page"],
+        ["button", "TRACE_NEXT", "Next page"]
       ]
     },
     {
@@ -178,12 +204,12 @@
         [
           "button",
           "ASSIST_MODE",
-          "Select through Assist without GPS"
+          "Assist mode (activation point false)"
         ],
         [
           "button",
           "MENU_MODE",
-          "Request parking menu, then select"
+          "Cluster request, then select mode"
         ]
       ]
     },
@@ -223,7 +249,7 @@
         [
           "button",
           "ASSIST_CAMERA",
-          "Select through Assist without GPS"
+          "Assist camera (activation point false)"
         ],
         [
           "button",
@@ -234,13 +260,13 @@
     },
     {
       "name": "ROUTES",
-      "title": "Parking menu and video",
+      "title": "Cluster and video player tests",
       "kind": "menu",
       "items": [
         [
           "button",
           "OPEN_MENU",
-          "Request native parking menu"
+          "Send cluster parking request"
         ],
         [
           "button",
@@ -379,6 +405,16 @@
           "text",
           "MENU_STATE",
           "Layout / visibility: waiting"
+        ],
+        [
+          "text",
+          "CID_CONTEXT",
+          "CID context: waiting"
+        ],
+        [
+          "text",
+          "CID_CONTEXT2",
+          "CID applet / state: waiting"
         ],
         [
           "text",

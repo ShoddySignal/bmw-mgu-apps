@@ -2,6 +2,8 @@
 
 Parking Camera Assist tests the parking camera services found in the BMW X5 G05 MGU SOME/IP catalog. It records which requests the app sent and what the vehicle subsequently reported. Choose and confirm each test with the vehicle stopped in P. The app checks current selector and speed signals again at the point of dispatch.
 
+Opening the factory camera screen from the app still needs validation. `parkmenuRequestedByUser` belongs to `ParkmenuInstrumentCluster`. The mode, perspective and video player calls test those functions individually. The app records the central display context to investigate `HMIControl.requestGraphicalContext`.
+
 ## Planned automatic activation
 
 - **Low speed** opens the selected parking view when the vehicle enters a configurable low-speed range.
@@ -27,18 +29,24 @@ Copy `catalog.json` and the `.tgz` it lists from `dist/usb/mgu-repo/parking_came
 
 | Screen | Requests available |
 | --- | --- |
-| **Screen modes** | Parking / 360, Panorama View, 3D View, rear view, trailer hitch, car wash, Assist View, MPIL and sensors only. Select a mode through HMI, try Assist with `activationPointReached=false`, or request the parking menu first via `parkmenuRequestedByUser`. |
+| **Screen modes** | Parking / 360, Panorama View, 3D View, rear view, trailer hitch, car wash, Assist View, MPIL and sensors only. Select a mode through HMI, try Assist with `activationPointReached=false`, or send `parkmenuRequestedByUser` to the instrument cluster interface before attempting mode selection. |
 | **Cameras and 3D presets** | Front, rear, left, right, Panorama, automatic, semi-automatic and eight `FREE_CAMERA_n` presets. Test the individual selection or enter 3D and then select a preset. |
-| **Open menu and video players** | Request the parking menu by itself, select the automatic camera, or test the base CameraPlayer, ParkCameraPlayer normal and protected starts, and DasVideo with `WD_ACTIVE`. Player tests require a reported idle state. After a successful start, the app observes the player for four seconds and requests stop if it still observes playback, the vehicle is parked, and the factory parking menu has not requested visibility. |
+| **Cluster and video player tests** | Send the cluster parking request, select the automatic camera, or test the base CameraPlayer, ParkCameraPlayer normal and protected starts, and DasVideo with `WD_ACTIVE`. Player tests require a reported idle state. After a successful start, the app observes the player for four seconds and requests stop if it still observes playback, the vehicle is parked, and the factory parking menu has not requested visibility. |
 | **XView3D and ICAM2** | Try direct perspective requests for 360, bird's-eye, fixed view, free 3D, front or rear Panorama, rear camera, trailer zoom and car wash. Set the perspective byte or take it from the current observed state. The ICAM2 test uses a client cookie obtained through `clientAttach` and releases it with `clientDetach`. |
 
 The confirmation screen shows the call. Use **Send with enum names** first. A separate **Send with enum numbers** option is available for comparing the native binding's enum handling. Each confirmation runs only the selected test. For combined tests, the second call waits for a new parking menu or 3D mode notification. If no matching notification arrives, the log identifies the step where the test stopped.
 
-The eight 3D preset numbers have no side labels in the catalog. To map them on the vehicle, choose **Record factory controls for 90 s**, open the factory camera screen and move around the 3D selector. Note the order by position relative to the car's nose. Compare it with `selectedCamera` and `XView3D.CurrentState.perspective` in the trace.
+The eight 3D preset numbers have no side labels in the catalog. To map them on the vehicle, start a **Factory trace**, open the factory camera screen and move around the 3D selector. Note the order by position relative to the car's nose. Compare it with the camera and 3D perspective entries in the trace.
 
 ## Diagnostics
 
-**Live diagnostics** displays the selected mode and camera, the parking layout, the 3D availability flag, XView3D and ICAM2 state, player state, watchdog state and parking pop-ups. The app keeps its subscriptions while its process is running, including when the factory screen has taken focus.
+While parked with the camera closed, open **Factory trace** and select **Record for 90 s**. Wait a few seconds, open 360 with the factory button, wait again and close it. Return to **Factory trace** and select **Stop recording** if the timer is still running. Photograph the relevant pages before starting a separate recording for Panorama View.
+
+The screen shows the starting display IDs and parking menu state, followed by up to 40 changes with times relative to the start. Use **Previous page** and **Next page** to browse. A dash means the field has yet to report a value or has become unavailable. The screen retains the last recording while the app process is running. Starting another recording replaces it.
+
+The file also contains both full `currentGraphicalContext` structures under `cid` (`HMIContext`, `HMI_CID`) and `cid2` (`HMIContext2`, instance `1`). A parking overlay may leave the reported context unchanged.
+
+**Live diagnostics** displays the central display context, the selected mode and camera, the parking layout, the 3D availability flag, XView3D and ICAM2 state, player state, watchdog state and parking pop-ups. The app keeps its subscriptions while its process is running, including when the factory screen has taken focus.
 
 Look for `camera-assist` lines in the app's `data/parking_camera_assist.log` or its rotated `.log.1`. The records include provider availability, a before and after snapshot, the interface, method ID and parameters at dispatch, the native reply or error, and state changes observed while recording. **Dispatched** indicates that a fire-and-forget call returned from the local binding. **Replied** indicates a reply for a request-response call. Actual activation is measured from the observed state and display.
 

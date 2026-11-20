@@ -25,7 +25,7 @@ async function harness(options = {}) {
     const signals = {
         async watch(iface, instance, receive, logger, opts) {
             const key = Object.keys(SOURCES).find((name) => SOURCES[name].iface === iface);
-            assert.equal(instance, '1');
+            assert.equal(instance, key === 'cid' ? 'HMI_CID' : '1');
             const link = { proxy: { key }, available: true, async shutdown() {} };
             watchers[key] = { receive, opts, link };
             opts.onAvailable(true);
@@ -51,15 +51,19 @@ async function harness(options = {}) {
         emit('speed', 'statusCarSpeed2', { speedVehicleCentreOfGravity: 0 });
         emit('gear', 'DataPowerTrain2', { statusGearSelectionDrive: 3 });
     };
+    const visibleHandlers = [];
     const ui = {
         screen: 'MAIN',
         handlers: {},
-        onVisible() {},
+        onVisible: (handler) => { visibleHandlers.push(handler); },
         onFocus() {},
         hasFocus: () => true,
         isVisible: (screen) => ui.screen === screen,
         onClick: (name, handler) => { ui.handlers[name] = handler; },
-        open: async (screen) => { ui.screen = screen; },
+        open: async (screen) => {
+            ui.screen = screen;
+            await Promise.all(visibleHandlers.map((handler) => handler(screen, true)));
+        },
         text: async (key, value) => { writes.push([key, value]); },
         enabled: async () => {},
         visible: async () => {},
@@ -76,6 +80,12 @@ test('manifest covers each request and subscribed field, including all eight fre
         const signal = app.signals[SOURCES[key].iface];
         for (const field of FIELDS[key]) assert.match(signal[field], /s/);
         assert.equal(Object.values(signal).includes('w'), false);
+    }
+    assert.equal(app.signals[SOURCES.cid.iface]._instances, 'HMI_CID');
+    for (const key of ['cid', 'cid2']) {
+        const signal = app.signals[SOURCES[key].iface];
+        assert.equal(signal.currentGraphicalContext, 'rs');
+        assert.equal(signal._methods, undefined);
     }
 
     const plans = Object.values(SIMPLE)
@@ -213,10 +223,23 @@ test('live trace records state changes without sending anything, and the menu ru
     bindUi(host, h.probe);
     t.after(() => host.app.emit('shutdown'));
     h.parked();
-    await h.ui.handlers.TRACE();
+    const field = 'currentGraphicalContext';
+    const home = { visibleContext: 100, focusIndex: 0, listIndex: -1 };
+    const camera = { visibleContext: 200, focusIndex: 1, listIndex: -1 };
+    const camera2 = { VisualContext: { AppletID: 2, StateID: 3 }, FocusIndex: { AppletID: 2, FocusIndex: 1 }, ListIndex: -1 };
+    h.emit('cid', field, home);
+    await h.ui.handlers.GO_TRACE();
+    assert.equal(h.ui.screen, 'TRACE_RESULTS');
+    await h.ui.handlers.TRACE_START();
     h.ui.screen = 'FACTORY_CAMERA';
+    h.emit('cid', field, camera);
+    h.emit('cid2', field, camera2);
     h.emit('hmi', 'selectedCamera', 7);
     h.emit('hmi', 'selectedCamera', 7);
+    h.emit('cid', field, home);
+    assert.deepEqual(h.logs.find((line) => line.event === 'manual-trace').state.cid.values[field], home);
+    assert.deepEqual(h.logs.filter((line) => line.field === field).map(({ source, value }) => [source, value]),
+        [['cid', camera], ['cid2', camera2], ['cid', home]]);
     assert.equal(h.logs.filter((line) => line.event === 'signal' && line.field === 'selectedCamera').length, 1);
     assert.deepEqual(names(h), []);
 
@@ -228,4 +251,59 @@ test('live trace records state changes without sending anything, and the menu ru
     assert.deepEqual(names(h), []);
     await h.ui.handlers.RUN_NAMES();
     assert.deepEqual(h.calls, [{ key: 'hmi', method: 'hmiSelectCameraMode', args: { cameraMode: 'PANORAMAVIEW' } }]);
+});
+
+test('factory trace shows the before screen and chronological changes after returning to the app', async (t) => {
+    const h = await harness();
+    const host = { log: h.log, ui: h.ui, app: new EventEmitter() };
+    bindUi(host, h.probe);
+    t.after(() => host.app.emit('shutdown'));
+    const displayed = (key) => h.writes.filter(([id]) => id === key).pop()[1];
+    const setScreen = (id, focusIndex = 0) => h.emit('cid', 'currentGraphicalContext', { visibleContext: id, focusIndex });
+    setScreen(100);
+    await h.ui.handlers.GO_TRACE();
+    await h.ui.handlers.TRACE_START();
+    assert.match(displayed('TRACE_STATUS'), /Recording \(90 s\)/);
+    assert.match(displayed('TRACE_BASELINE'), /Before: CID 100/);
+    h.ui.screen = 'FACTORY_CAMERA';
+    h.advance(1800);
+    setScreen(200);
+    setScreen(200, 1);
+    h.emit('cid2', 'currentGraphicalContext', { VisualContext: { AppletID: 2, StateID: 3 } });
+    h.emit('menu', 'requestParkmenu', { parkmenuLayout: 'PANORAMAVIEW', hmiVisibilityRequest: 'FADE_IN' });
+    h.emit('hmi', 'selectedCameraMode', 'PANORAMAVIEW');
+    h.advance(2000);
+    setScreen(100);
+    await h.ui.handlers.GO_TRACE();
+    await h.ui.handlers.TRACE_STOP();
+    assert.match(displayed('TRACE_STATUS'), /Recording ended.*5 changes.*Page 1\/2/);
+    assert.equal(displayed('TRACE_ROW_1'), '+1.8 s  CID screen  200');
+    assert.equal(displayed('TRACE_ROW_2'), '+1.8 s  CID app/state  2/3');
+    await h.ui.handlers.TRACE_NEXT();
+    assert.equal(displayed('TRACE_ROW_1'), '+3.8 s  CID screen  100');
+    assert.match(displayed('TRACE_STATUS'), /Page 2\/2/);
+    await h.ui.handlers.TRACE_PREVIOUS();
+    assert.equal(displayed('TRACE_ROW_1'), '+1.8 s  CID screen  200');
+    setScreen(300);
+    assert.equal(h.probe.trace.changes.length, 5);
+    assert.deepEqual(names(h), []);
+});
+
+test('factory trace retains the start values and latest 40 changes, and expires after 90 seconds', async () => {
+    const h = await harness();
+    const setScreen = (visibleContext) => h.emit('cid', 'currentGraphicalContext', { visibleContext });
+    setScreen(50);
+    h.probe.startTrace();
+    for (let id = 51; id <= 95; id++) setScreen(id);
+    h.advance(90000);
+    setScreen(96);
+    assert.equal(h.probe.trace.initial['CID screen'], '50');
+    assert.equal(h.probe.trace.changes.length, 40);
+    assert.equal(h.probe.trace.omitted, 5);
+    assert.equal(h.probe.trace.changes[0].text, '56');
+    assert.equal(h.probe.trace.changes[39].text, '95');
+    assert.equal(h.probe.traceRemaining(), 0);
+    h.probe.startTrace();
+    assert.equal(h.probe.trace.initial['CID screen'], '96');
+    assert.deepEqual(h.probe.trace.changes, []);
 });

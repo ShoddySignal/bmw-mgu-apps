@@ -1,6 +1,7 @@
 'use strict';
 
 const { MODES, CAMERAS, PERSPECTIVES, CLIENT_TYPES, SIMPLE, selection, freeView, direct, menuOpen, describe } = require('./plans');
+const TRACE_ROWS = ['TRACE_ROW_1', 'TRACE_ROW_2', 'TRACE_ROW_3', 'TRACE_ROW_4'];
 
 function format(value) {
     if (value === undefined || value === null) return 'unavailable';
@@ -20,6 +21,7 @@ function bindUi(ctx, probe) {
     let pending = null;
     let rendering = false;
     let openingReview = false;
+    let tracePage = 0;
 
     const selectRow = (id, key, options) => ui.onClick(id, (event) => {
         if (Number.isInteger(event.row) && options[event.row]) rows[key] = event.row;
@@ -34,6 +36,37 @@ function bindUi(ctx, probe) {
     };
     const putText = (queue, key, value) => put(queue, key, value, () => ui.text(key, value));
     const enable = (queue, key, value) => put(queue, key, value, () => ui.enabled(key, value));
+    const visible = (queue, key, value) => put(queue, key + ':visible', value, () => ui.visible(key, value));
+
+    function renderTrace(tasks) {
+        const { initial, changes, omitted } = probe.trace;
+        const remaining = probe.traceRemaining();
+        const pages = Math.max(1, Math.ceil(changes.length / TRACE_ROWS.length));
+        tracePage = Math.min(tracePage, pages - 1);
+        const count = changes.length + omitted;
+        const status = remaining ? 'Recording (' + remaining + ' s)' : 'Recording ended';
+        const page = 'Page ' + (tracePage + 1) + '/' + pages;
+        const summary = [status, count + (count === 1 ? ' change' : ' changes'), page];
+        if (omitted) summary.push('Showing last ' + changes.length);
+        visible(tasks, 'TRACE_START', !remaining);
+        visible(tasks, 'TRACE_STOP', !!remaining);
+        putText(tasks, 'TRACE_STATUS', initial ? summary.join(' | ')
+            : 'Start recording, then open and close the factory camera.');
+        if (initial) {
+            putText(tasks, 'TRACE_BASELINE', 'Before: CID ' + initial['CID screen'] + ', app/state ' + initial['CID app/state'] +
+                ' | Park ' + initial.Park);
+        }
+        visible(tasks, 'TRACE_BASELINE', !!initial);
+        TRACE_ROWS.forEach((key, i) => {
+            const change = changes[tracePage * TRACE_ROWS.length + i];
+            if (change) putText(tasks, key, '+' + (change.elapsed / 1000).toFixed(1) + ' s  ' + change.label + '  ' + change.text);
+            visible(tasks, key, !!change);
+        });
+        visible(tasks, 'TRACE_PREVIOUS', pages > 1);
+        visible(tasks, 'TRACE_NEXT', pages > 1);
+        enable(tasks, 'TRACE_PREVIOUS', tracePage > 0);
+        enable(tasks, 'TRACE_NEXT', tracePage + 1 < pages);
+    }
 
     async function render() {
         if (rendering) return;
@@ -45,6 +78,7 @@ function bindUi(ctx, probe) {
             const seconds = probe.traceRemaining();
             putText(tasks, 'STATUS', probe.status + (seconds ? ' Trace: ' + seconds + ' s' : ''));
         }
+        if (ui.isVisible('TRACE_RESULTS')) renderTrace(tasks);
         if (ui.isVisible('CAMERAS')) enable(tasks, 'ENTER_FREE', !!freeView(rows.camera));
         if (ui.isVisible('RAW')) {
             putText(tasks, 'RAW_INDEX', 'Perspective byte: ' + angle);
@@ -64,8 +98,12 @@ function bindUi(ctx, probe) {
             const selectionBar = state('hmi', 'operabilitySelectionBar') || {};
             const display = state('display', 'videoDisplayStatus') || {};
             const popup = state('popup', 'displayPopUp') || {};
+            const cid = state('cid', 'currentGraphicalContext') || {};
+            const visual = (state('cid2', 'currentGraphicalContext') || {}).VisualContext || {};
             putText(tasks, 'HMI_STATE', 'Mode / camera: ' + format(state('hmi', 'selectedCameraMode')) + ' / ' + format(state('hmi', 'selectedCamera')));
             putText(tasks, 'MENU_STATE', 'Layout / visibility: ' + format(layout.parkmenuLayout) + ' / ' + format(layout.hmiVisibilityRequest));
+            putText(tasks, 'CID_CONTEXT', 'CID context: ' + format(cid.visibleContext));
+            putText(tasks, 'CID_CONTEXT2', 'CID applet / state: ' + [visual.AppletID, visual.StateID].map(format).join(' / '));
             putText(tasks, 'FREE_STATE', '3D available / angle: ' + format(selectionBar.freeViewOperable) + ' / ' + format(state('xview', 'PosAngleFreecamera')));
             putText(tasks, 'XVIEW_STATE', 'XView3D: ' + perspective(state('xview', 'CurrentState')));
             putText(tasks, 'ICAM_STATE', 'ICAM2: ' + perspective(state('icam', 'currentState')));
@@ -87,7 +125,7 @@ function bindUi(ctx, probe) {
         pending = null;
         try {
             const request = describe(plan, false);
-            const prefix = plan.enterParkmenu ? 'Request menu, then ' : plan.enterFreeView ? 'Enter 3D, then '
+            const prefix = plan.enterParkmenu ? 'Send cluster request, then ' : plan.enterFreeView ? 'Enter 3D, then '
                 : plan.attach ? 'Attach ICAM2, then ' : '';
             await Promise.all([ui.text('REVIEW_NAME', plan.label), ui.text('REVIEW_REQUEST', prefix + request)]);
             pending = plan;
@@ -105,9 +143,23 @@ function bindUi(ctx, probe) {
         await render();
     }
 
-    const navigation = { GO_MODES: 'MODES', GO_CAMERAS: 'CAMERAS', GO_ROUTES: 'ROUTES', GO_RAW: 'RAW', GO_STATE: 'DIAGNOSTICS' };
+    const navigation = {
+        GO_TRACE: 'TRACE_RESULTS', GO_MODES: 'MODES', GO_CAMERAS: 'CAMERAS',
+        GO_ROUTES: 'ROUTES', GO_RAW: 'RAW', GO_STATE: 'DIAGNOSTICS',
+    };
     Object.keys(navigation).forEach((button) => ui.onClick(button, () => ui.open(navigation[button])));
-    ui.onClick('TRACE', () => { probe.startTrace(); return render(); });
+    ui.onClick('TRACE_START', () => {
+        if (probe.traceRemaining()) return;
+        tracePage = 0;
+        probe.startTrace();
+        return render();
+    });
+    ui.onClick('TRACE_STOP', () => {
+        if (probe.traceRemaining()) probe.stopTrace();
+        return render();
+    });
+    ui.onClick('TRACE_PREVIOUS', () => { tracePage = Math.max(0, tracePage - 1); return render(); });
+    ui.onClick('TRACE_NEXT', () => { tracePage++; return render(); });
     selectRow('MODE_PICK', 'mode', MODES);
     selectRow('CAMERA_PICK', 'camera', CAMERAS);
     selectRow('RAW_PICK', 'raw', PERSPECTIVES);

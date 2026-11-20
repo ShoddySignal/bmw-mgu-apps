@@ -1,10 +1,10 @@
 'use strict';
 
 const { SOURCES, FIELDS, VIDEO_STATES, SIMPLE, selection, call } = require('./plans');
+const { FactoryTrace, DURATION_MS } = require('./trace');
 const CALL_TIMEOUT = 1500;
 const SAMPLE_AGE = 3500;
 const VIDEO_TEST_MS = 4000;
-const MANUAL_TRACE_MS = 90000;
 
 function json(value) {
     return JSON.stringify(value === undefined ? null : value, (key, item) =>
@@ -35,7 +35,7 @@ class Probe {
         this.samples = {};
         this.provider = {};
         this.sequence = 0;
-        this.traceUntil = 0;
+        this.trace = new FactoryTrace();
         this.busy = false;
         this.closed = false;
         this.status = 'Select a request or record a factory-camera session.';
@@ -53,7 +53,7 @@ class Probe {
         const options = { onAvailable: (up) => this.setAvailable(key, up) };
         if (key === 'speed') options.pollMs = 1200;
         try {
-            const link = await this.signals.watch(svc.iface, '1', receive, this.log, options);
+            const link = await this.signals.watch(svc.iface, svc.instance || '1', receive, this.log, options);
             if (this.closed) return link.shutdown();
             this.links[key] = link;
             if (link.error) this.record('subscribe-error', { source: key, interface: svc.iface, error: link.error });
@@ -75,7 +75,12 @@ class Probe {
     setAvailable(key, up) {
         if (this.closed || this.provider[key] === up) return;
         this.provider[key] = up;
-        if (!up) delete this.samples[key];
+        if (!up) {
+            const fields = Object.keys(this.samples[key] || {});
+            delete this.samples[key];
+            const at = this.now();
+            fields.forEach((field) => this.trace.observe(key, field, undefined, at));
+        }
         this.record('provider', { source: key, interface: SOURCES[key].iface, available: up });
     }
 
@@ -89,8 +94,12 @@ class Probe {
         const fields = this.samples[key] || (this.samples[key] = {});
         const previous = fields[field];
         const data = json(value);
-        fields[field] = { at: this.now(), value, data };
-        if (this.tracing() && (!previous || previous.data !== data)) this.record('signal', { source: key, field, value });
+        const at = this.now();
+        fields[field] = { at, value, data };
+        if (!previous || previous.data !== data) {
+            if (this.busy || this.trace.active(at)) this.record('signal', { source: key, field, value });
+            this.trace.observe(key, field, value, at);
+        }
     }
 
     value(key, field, maxAge) {
@@ -144,15 +153,17 @@ class Probe {
         return state;
     }
 
-    tracing() { return this.busy || this.now() < this.traceUntil; }
-
     startTrace() {
-        this.traceUntil = this.now() + MANUAL_TRACE_MS;
-        this.record('manual-trace', { seconds: MANUAL_TRACE_MS / 1000, state: this.snapshot() });
-        this.status = 'Recording factory-camera changes for 90 s.';
+        this.trace.start(this.now(), (source, field) => this.value(source, field));
+        this.record('manual-trace', { seconds: DURATION_MS / 1000, state: this.snapshot() });
     }
 
-    traceRemaining() { return Math.max(0, Math.ceil((this.traceUntil - this.now()) / 1000)); }
+    stopTrace() {
+        this.trace.stop();
+        this.record('manual-trace-stop', {});
+    }
+
+    traceRemaining() { return this.trace.remaining(this.now()); }
 
     record(event, details) {
         this.log.info('camera-assist ' + json(Object.assign({ event, test: this.testId || null }, details)));
