@@ -2,7 +2,7 @@
   "id": "parking_camera_assist",
   "title": "Parking Camera Assist",
   "description": "Test parking camera activation in iDrive 7 and record Panorama, 360, 3D and video service diagnostics.",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "vendor": "ShoddySignal",
   "loggingId": "PKCA",
   "mguHmi": [
@@ -39,6 +39,11 @@
       "_instances": "HMI_CID",
       "currentGraphicalContext": "rs",
       "_optional": "Central display context"
+    },
+    "de.bmw.infotainment.hmi.hmicontrol.HMIControl": {
+      "_instances": "HMI_CID",
+      "_methods": ["requestGraphicalContext"],
+      "_optional": "Parking View opening test"
     },
     "de.bmw.infotainment.hmi.hmicontext2.HMIContext2": {
       "currentGraphicalContext": "rs",
@@ -125,6 +130,11 @@
           "text3",
           "STATUS",
           "Select a request or record factory camera changes."
+        ],
+        [
+          "button",
+          "OPEN_PARKING_VIEW",
+          "Test opening Parking View"
         ],
         [
           "button",
@@ -379,6 +389,7 @@
           "REVIEW_PARK",
           "Waiting for vehicle signals"
         ],
+        ["text3", "REVIEW_RESULT", ""],
         [
           "button",
           "RUN_NAMES",

@@ -19,6 +19,7 @@ function bindUi(ctx, probe) {
     const push = {};
     let angle = 0;
     let pending = null;
+    let reviewResult = '';
     let rendering = false;
     let openingReview = false;
     let tracePage = 0;
@@ -88,6 +89,8 @@ function bindUi(ctx, probe) {
             const canSend = !!(pending && !issue && !probe.busy && reviewVisible());
             const enumChoices = pending && (pending.attach || describe(pending, false) !== describe(pending, true));
             putText(tasks, 'REVIEW_PARK', probe.busy ? 'Recording test results…' : parking);
+            if (reviewResult) putText(tasks, 'REVIEW_RESULT', reviewResult);
+            visible(tasks, 'REVIEW_RESULT', !!reviewResult);
             enable(tasks, 'RUN_NAMES', canSend);
             enable(tasks, 'RUN_NUMBERS', canSend);
             put(tasks, 'numeric-visible', !!enumChoices, () => ui.visible('RUN_NUMBERS', !!enumChoices));
@@ -123,6 +126,7 @@ function bindUi(ctx, probe) {
         if (!plan || probe.busy || openingReview) return;
         openingReview = true;
         pending = null;
+        reviewResult = '';
         try {
             const request = describe(plan, false);
             const prefix = plan.enterParkmenu ? 'Send cluster request, then ' : plan.enterFreeView ? 'Enter 3D, then '
@@ -137,9 +141,12 @@ function bindUi(ctx, probe) {
     }
 
     async function send(numeric) {
+        if (!pending || probe.busy) return;
+        reviewResult = '';
         const result = probe.run(pending, numeric, reviewVisible);
         render();
         await result;
+        reviewResult = probe.status;
         await render();
     }
 
@@ -148,6 +155,11 @@ function bindUi(ctx, probe) {
         GO_ROUTES: 'ROUTES', GO_RAW: 'RAW', GO_STATE: 'DIAGNOSTICS',
     };
     Object.keys(navigation).forEach((button) => ui.onClick(button, () => ui.open(navigation[button])));
+    ui.onClick('OPEN_PARKING_VIEW', () => {
+        if (probe.parkingView) return review(probe.parkingView);
+        probe.status = 'Open and close Parking View once with the BMW button to capture CID 20251.';
+        return render();
+    });
     ui.onClick('TRACE_START', () => {
         if (probe.traceRemaining()) return;
         tracePage = 0;

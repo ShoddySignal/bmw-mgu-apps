@@ -6,7 +6,7 @@ const { EventEmitter } = require('node:events');
 const Car = require('../kit/runtime/car');
 const app = require('../apps/parking_camera_assist/app.json');
 const { FIELDS, SOURCES, CAMERAS, MODES, PERSPECTIVES, CLIENT_TYPES, SIMPLE,
-    selection, freeView, direct, menuOpen } = require('../apps/parking_camera_assist/plans');
+    parkingView, selection, freeView, direct, menuOpen } = require('../apps/parking_camera_assist/plans');
 const { Probe } = require('../apps/parking_camera_assist/probe');
 const { bindUi } = require('../apps/parking_camera_assist/ui');
 
@@ -25,7 +25,7 @@ async function harness(options = {}) {
     const signals = {
         async watch(iface, instance, receive, logger, opts) {
             const key = Object.keys(SOURCES).find((name) => SOURCES[name].iface === iface);
-            assert.equal(instance, key === 'cid' ? 'HMI_CID' : '1');
+            assert.equal(instance, ['cid', 'cidControl'].includes(key) ? 'HMI_CID' : '1');
             const link = { proxy: { key }, available: true, async shutdown() {} };
             watchers[key] = { receive, opts, link };
             opts.onAvailable(true);
@@ -82,6 +82,8 @@ test('manifest covers each request and subscribed field, including all eight fre
         assert.equal(Object.values(signal).includes('w'), false);
     }
     assert.equal(app.signals[SOURCES.cid.iface]._instances, 'HMI_CID');
+    assert.equal(app.signals[SOURCES.cidControl.iface]._instances, 'HMI_CID');
+    assert.deepEqual(app.signals[SOURCES.cidControl.iface]._methods, ['requestGraphicalContext']);
     for (const key of ['cid', 'cid2']) {
         const signal = app.signals[SOURCES[key].iface];
         assert.equal(signal.currentGraphicalContext, 'rs');
@@ -89,6 +91,7 @@ test('manifest covers each request and subscribed field, including all eight fre
     }
 
     const plans = Object.values(SIMPLE)
+        .concat(parkingView({ visibleContext: 20251, focusIndex: 0, listIndex: -1 }))
         .concat(MODES.flatMap((_, row) => [selection('mode', row, false), selection('mode', row, true)]))
         .concat(CAMERAS.flatMap((_, row) => [selection('camera', row, false), selection('camera', row, true)]))
         .concat(PERSPECTIVES.flatMap((_, row) => [direct(row, 0, 0, false), direct(row, 0, 0, true)]));
@@ -306,4 +309,67 @@ test('factory trace retains the start values and latest 40 changes, and expires 
     h.probe.startTrace();
     assert.equal(h.probe.trace.initial['CID screen'], '96');
     assert.deepEqual(h.probe.trace.changes, []);
+});
+
+test('factory trace shows camera mode changes even at the same perspective and CID', async () => {
+    const h = await harness();
+    const parking = { application: 'TOPREARVIEW', mode: 'AUTOMATIC_CAMERA', perspective: 0 };
+    const free = Object.assign({}, parking, { mode: 'FREE_CAMERA' });
+    h.emit('cid', 'currentGraphicalContext', { visibleContext: 20251 });
+    h.emit('xview', 'CurrentState', parking);
+    h.probe.startTrace();
+    h.emit('xview', 'PerspectiveChangeTriggered', { xView3DState: free });
+    h.emit('xview', 'CurrentState', free);
+    h.emit('icam', 'currentState', free);
+    h.emit('xview', 'CurrentState', free);
+    assert.deepEqual(h.probe.trace.changes.map(({ label, text }) => [label, text]), [
+        ['XView3D change', 'TOPREARVIEW / FREE_CAMERA / 0'],
+        ['XView3D', 'TOPREARVIEW / FREE_CAMERA / 0'],
+        ['ICAM2', 'TOPREARVIEW / FREE_CAMERA / 0'],
+    ]);
+});
+
+test('Parking View requests only the complete factory context and records even a brief CID transition', async (t) => {
+    const field = 'currentGraphicalContext';
+    const target = { visibleContext: 20251, focusIndex: 1234, listIndex: -1 };
+    const review = { visibleContext: 50152, focusIndex: 5678, listIndex: 2 };
+    const h = await harness({ reply(probe) {
+        media(probe, 'cid', field, target);
+        media(probe, 'cid', field, review);
+        return { errorCode: 0 };
+    } });
+    const host = { log: h.log, ui: h.ui, app: new EventEmitter() };
+    bindUi(host, h.probe);
+    t.after(() => host.app.emit('shutdown'));
+    h.parked();
+    h.emit('cid', field, { visibleContext: target.visibleContext });
+    await h.ui.handlers.OPEN_PARKING_VIEW();
+    assert.equal(h.ui.screen, 'MAIN');
+    assert.match(h.probe.status, /Open and close Parking View once/);
+    assert.deepEqual(names(h), []);
+    h.emit('cid', field, target);
+    h.emit('cid', field, review);
+    await h.ui.handlers.OPEN_PARKING_VIEW();
+    assert.equal(h.ui.screen, 'REVIEW');
+    assert.deepEqual(names(h), []);
+    await h.ui.handlers.RUN_NAMES();
+    assert.deepEqual(h.calls, [{ key: 'cidControl', method: 'requestGraphicalContext', args: { initiator: 'A4A', context: target } }]);
+    assert.ok(h.logs.some((line) => line.event === 'send' && line.instance === 'HMI_CID' && line.methodId === '0x0005'));
+    assert.ok(h.logs.some((line) => line.event === 'cid-result' && line.observed && line.after === review.visibleContext));
+    assert.ok(h.writes.some(([key, value]) => key === 'REVIEW_RESULT' && value.includes('20251 observed')));
+});
+
+test('Parking View distinguishes an HMI refusal from a visible selection and blocks a request already on its target', async () => {
+    const field = 'currentGraphicalContext';
+    const target = { visibleContext: 20251, focusIndex: 1, listIndex: 0 };
+    const h = await harness({ reply: () => ({ errorCode: 4 }) });
+    h.parked();
+    h.emit('cid', field, target);
+    await h.probe.run(h.probe.parkingView, true, front);
+    assert.deepEqual(names(h), []);
+    assert.match(h.probe.status, /Close Parking View before sending/);
+    h.emit('cid', field, { visibleContext: 50152 });
+    await h.probe.run(h.probe.parkingView, true, front);
+    assert.deepEqual(h.calls, [{ key: 'cidControl', method: 'requestGraphicalContext', args: { initiator: 1, context: target } }]);
+    assert.match(h.probe.status, /NOT_ALLOWED.*20251 not observed/);
 });

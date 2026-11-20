@@ -27,6 +27,8 @@ Copy `catalog.json` and the `.tgz` it lists from `dist/usb/mgu-repo/parking_came
 
 ## Test a camera
 
+On the G05, the central display reported context `20251` while the factory Parking View was visible. After starting the app, open and close Parking View once with the BMW button. Select **Test opening Parking View** and confirm with the vehicle stopped in P. The test uses `HMIControl.requestGraphicalContext` with the three fields captured from that screen. The result shows the method's reply and whether the central display reported `20251` during the test. Check whether the camera image actually appeared. This test needs validation on the vehicle.
+
 | Screen | Requests available |
 | --- | --- |
 | **Screen modes** | Parking / 360, Panorama View, 3D View, rear view, trailer hitch, car wash, Assist View, MPIL and sensors only. Select a mode through HMI, try Assist with `activationPointReached=false`, or send `parkmenuRequestedByUser` to the instrument cluster interface before attempting mode selection. |
@@ -36,7 +38,7 @@ Copy `catalog.json` and the `.tgz` it lists from `dist/usb/mgu-repo/parking_came
 
 The confirmation screen shows the call. Use **Send with enum names** first. A separate **Send with enum numbers** option is available for comparing the native binding's enum handling. Each confirmation runs only the selected test. For combined tests, the second call waits for a new parking menu or 3D mode notification. If no matching notification arrives, the log identifies the step where the test stopped.
 
-The eight 3D preset numbers have no side labels in the catalog. To map them on the vehicle, start a **Factory trace**, open the factory camera screen and move around the 3D selector. Note the order by position relative to the car's nose. Compare it with the camera and 3D perspective entries in the trace.
+The eight 3D preset numbers have no side labels in the catalog. To map them on the vehicle, start a **Factory trace**, open Parking View, open its camera menu, select 3D, then choose sides one at a time with a short pause between actions. Note the order by position relative to the car's nose. The **XView3D**, **XView3D change**, and **ICAM2** rows show application, mode and perspective in that order. The G05 reported `20251 → 20541 → 20251` while switching to 3D from the Parking View menu. Which action caused the temporary `20541` needs validation.
 
 ## Diagnostics
 

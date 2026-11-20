@@ -5,6 +5,7 @@ const SOURCES = {
     menu: { iface: 'de.bmw.dass.parking.parkmenu.parkmenuandlayout.ParkmenuAndLayout', id: '3059' },
     cluster: { iface: 'de.bmw.dass.parking.ParkmenuInstrumentCluster', id: '3064' },
     cid: { iface: 'de.bmw.infotainment.hmi.hmicontext.HMIContext', instance: 'HMI_CID' },
+    cidControl: { iface: 'de.bmw.infotainment.hmi.hmicontrol.HMIControl', id: 'B039', instance: 'HMI_CID' },
     cid2: { iface: 'de.bmw.infotainment.hmi.hmicontext2.HMIContext2' },
     popup: { iface: 'de.bmw.dass.parking.ParkmenuTextForDisplayCid', id: '3076' },
     xview: { iface: 'de.bmw.dass.XView3D', id: '3003' },
@@ -23,6 +24,7 @@ const FIELDS = {
     menu: ['requestParkmenu'],
     cluster: ['parkmenuRequest'],
     cid: ['currentGraphicalContext'],
+    cidControl: [],
     cid2: ['currentGraphicalContext'],
     popup: ['displayPopUp'],
     xview: ['CurrentState', 'PosAngleFreecamera'],
@@ -81,6 +83,24 @@ function enumeration(pair, numeric) { return pair[numeric ? 1 : 0]; }
 
 function call(source, method, id, params, fireAndForget) {
     return { source, method, id, params, fireAndForget: !!fireAndForget };
+}
+
+function parkingView(value) {
+    // The central display changed to this ID while Parking View was open on the G05.
+    if (!value || value.visibleContext !== 20251) return null;
+    const { visibleContext, focusIndex, listIndex } = value;
+    if (!Number.isInteger(focusIndex) || focusIndex < 0 || focusIndex > 0xffffffff ||
+        !Number.isInteger(listIndex) || listIndex < -0x80000000 || listIndex > 0x7fffffff) return null;
+    return {
+        label: 'Test opening Parking View',
+        visibleContext,
+        build(numeric) {
+            return call('cidControl', 'requestGraphicalContext', '0005', {
+                initiator: numeric ? 1 : 'A4A',
+                context: { focusIndex, listIndex, visibleContext },
+            });
+        },
+    };
 }
 
 function selection(kind, row, assist) {
@@ -162,4 +182,4 @@ function describe(plan, numeric) {
 }
 
 module.exports = { SOURCES, FIELDS, MODES, CAMERAS, PERSPECTIVES, CLIENT_TYPES, VIDEO_STATES, SIMPLE,
-    selection, freeView, direct, menuOpen, call, describe };
+    parkingView, selection, freeView, direct, menuOpen, call, describe };

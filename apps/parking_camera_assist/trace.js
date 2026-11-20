@@ -7,6 +7,10 @@ function scalar(value) {
     return typeof value === 'string' || typeof value === 'number' ? String(value) : '-';
 }
 
+function cameraState(value) {
+    return [value.application, value.mode, value.perspective].map(scalar).join(' / ');
+}
+
 const SIGNALS = {
     cid: { currentGraphicalContext: ['CID screen', (v) => scalar(v.visibleContext)] },
     cid2: { currentGraphicalContext: ['CID app/state', (v) => {
@@ -17,7 +21,11 @@ const SIGNALS = {
         v.hmiVisibilityRequest, v.parkmenuLayout, scalar(v.parkmenuRequest).replace(/^PARKMENU_/, ''),
     ].map(scalar).join(' / ')] },
     hmi: { selectedCameraMode: ['Mode', scalar], selectedCamera: ['Camera', scalar] },
-    xview: { CurrentState: ['3D perspective', (v) => scalar(v.perspective)] },
+    xview: {
+        CurrentState: ['XView3D', cameraState],
+        PerspectiveChangeTriggered: ['XView3D change', (v) => cameraState(v.xView3DState || v)],
+    },
+    icam: { currentState: ['ICAM2', cameraState] },
     parkPlayer: { cameraPlayerState: ['Player', scalar] },
     display: { videoDisplayStatus: ['Display video', (v) => scalar(v.cameraPlayerState)] },
 };

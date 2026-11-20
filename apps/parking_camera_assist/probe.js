@@ -1,10 +1,13 @@
 'use strict';
 
-const { SOURCES, FIELDS, VIDEO_STATES, SIMPLE, selection, call } = require('./plans');
+const { SOURCES, FIELDS, VIDEO_STATES, SIMPLE, parkingView, selection, call } = require('./plans');
 const { FactoryTrace, DURATION_MS } = require('./trace');
 const CALL_TIMEOUT = 1500;
 const SAMPLE_AGE = 3500;
 const VIDEO_TEST_MS = 4000;
+const CID_FIELD = 'currentGraphicalContext';
+const HMI_RESULTS = ['OK', 'ABORTED', 'CONTEXT_NOT_AVAILABLE', 'NO_CHANGE', 'NOT_ALLOWED',
+    'NOT_FOCUSABLE', 'NOT_FOUND', 'NOT_POSSIBLE', 'OUT_OF_RANGE', 'UNSUPPORTED_PARAMETER'];
 
 function json(value) {
     return JSON.stringify(value === undefined ? null : value, (key, item) =>
@@ -36,6 +39,8 @@ class Probe {
         this.provider = {};
         this.sequence = 0;
         this.trace = new FactoryTrace();
+        this.parkingView = null;
+        this.cidAttempt = null;
         this.busy = false;
         this.closed = false;
         this.status = 'Select a request or record a factory-camera session.';
@@ -96,6 +101,13 @@ class Probe {
         const data = json(value);
         const at = this.now();
         fields[field] = { at, value, data };
+        if (key === 'cid' && field === CID_FIELD) {
+            const plan = parkingView(value);
+            if (plan) this.parkingView = plan;
+            if (this.cidAttempt && value && value.visibleContext === this.cidAttempt.target) {
+                this.cidAttempt.observed = true;
+            }
+        }
         if (!previous || previous.data !== data) {
             if (this.busy || this.trace.active(at)) this.record('signal', { source: key, field, value });
             this.trace.observe(key, field, value, at);
@@ -172,7 +184,7 @@ class Probe {
     async invoke(action, check, onSend) {
         const svc = SOURCES[action.source];
         const details = {
-            interface: svc.iface, service: '0x' + svc.id, instance: '1', method: action.method,
+            interface: svc.iface, service: '0x' + svc.id, instance: svc.instance || '1', method: action.method,
             methodId: '0x' + action.id, params: action.params, fireAndForget: action.fireAndForget,
         };
         let sent = false;
@@ -215,10 +227,34 @@ class Probe {
             !is(menu.hmiVisibilityRequest, 'FADE_OUT', 2);
     }
 
+    currentCid() {
+        const context = this.value('cid', CID_FIELD);
+        return context && Number.isInteger(context.visibleContext) ? context.visibleContext : null;
+    }
+
+    beginCidAttempt(target) {
+        const before = this.currentCid();
+        if (before === null) throw new Error('Current CID screen is unavailable');
+        if (before === target) throw new Error('Close Parking View before sending');
+        this.cidAttempt = { target, before, observed: false };
+    }
+
+    finishCidAttempt() {
+        if (!this.cidAttempt) return;
+        const result = this.cidAttempt;
+        this.cidAttempt = null;
+        const after = this.currentCid();
+        this.record('cid-result', Object.assign({ after }, result));
+        this.status += ' | CID ' + result.before + ' > ' + (after === null ? '-' : after) +
+            ' | ' + result.target + (result.observed ? ' observed' : ' not observed');
+    }
+
     async run(plan, numeric, foreground) {
         if (this.closed || this.busy || !plan) return;
         if (!foreground()) {
-            this.record('blocked', { reason: 'Review screen is not in front' });
+            const reason = 'Review screen is not in front';
+            this.status = 'Not sent · ' + reason;
+            this.record('blocked', { reason });
             return;
         }
 
@@ -231,7 +267,7 @@ class Probe {
         try {
             let step = plan.build(numeric);
             this.checkParked();
-            if (!this.available(step.source)) throw new Error('Provider unavailable · ' + step.source);
+            if (!this.available(step.source)) throw new Error('Provider unavailable · ' + SOURCES[step.source].iface.split('.').pop());
             let first = true;
             const send = (action, extraCheck) => this.invoke(action, () => {
                 this.checkParked();
@@ -259,7 +295,8 @@ class Probe {
                 this.release = () => this.invoke(call('icam', 'clientDetach', '0006', { cookie }));
                 step = plan.build(numeric, cookie);
             }
-            await send(step, () => {
+            const reply = await send(step, () => {
+                if (plan.visibleContext !== undefined) this.beginCidAttempt(plan.visibleContext);
                 if (!plan.video) return;
                 const field = VIDEO_STATES[plan.video];
                 if (!is(this.value(plan.video, field), 'VIDEO_IDLE', 0)) {
@@ -268,13 +305,20 @@ class Probe {
                 if (this.parkingMenuRequested()) throw new Error('Close the factory parking screen before a player test');
             });
             if (plan.video) this.release = () => this.stopVideo(plan.video);
-            this.status = (step.fireAndForget ? 'Dispatched' : 'Replied') + ' · ' + plan.label;
+            if (this.cidAttempt) {
+                const code = reply && typeof reply === 'object' ? reply.errorCode : reply;
+                const status = Number.isInteger(code) ? HMI_RESULTS[code] || String(code) : code;
+                this.status = 'HMI reply: ' + (status == null ? 'missing errorCode' : String(status));
+            } else {
+                this.status = (step.fireAndForget ? 'Dispatched' : 'Replied') + ' · ' + plan.label;
+            }
         } catch (error) {
             this.status = (sent ? 'Test incomplete' : 'Not sent') + ' · ' + message(error);
             this.record('test-error', { sent, error: message(error) });
         } finally {
             if (sent && !this.closed) await this.delay(VIDEO_TEST_MS);
             await this.releaseTest();
+            this.finishCidAttempt();
             this.record('test-end', { result: this.status, state: this.snapshot() });
             this.testId = null;
             this.busy = false;
