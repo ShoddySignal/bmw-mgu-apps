@@ -9,15 +9,19 @@ Parking Camera Assist tests the parking camera services found in the BMW X5 G05 
 
 The two options are planned as independent settings. The current build provides manual tests and diagnostics to verify camera activation and the vehicle's signals.
 
+## Install through MGU Store
+
+To install online, add `ShoddySignal/bmw-mgu-apps` as a **Releases** source in MGU Store, select **Check now**, then install **Parking Camera Assist** from the **Store** tab. [Full MGU Store installation steps](../../README.md#install-through-mgu-store)
+
 ## Install from USB
 
-Copy both files from `dist/usb/mgu-repo/parking_camera_assist/` to `mgu-repo/parking_camera_assist/` on a USB drive. In **MGU Store → USB**, install **Parking Camera Assist**. The package uses the SDK on the head unit. [MGU Store USB catalog format](https://github.com/robertnisipeanu/mgu-store/blob/main/docs/PUBLISHING.md#2-catalog)
-
-Build and test from the repository root.
+To prepare a USB package, build and test from the repository root.
 
 ```sh
 python3 tools/build_mgu_app.py parking_camera_assist --test
 ```
+
+Copy `catalog.json` and the `.tgz` it lists from `dist/usb/mgu-repo/parking_camera_assist/` to `mgu-repo/parking_camera_assist/` on a USB drive. Open **MGU Store → USB**, select **Parking Camera Assist** and choose **Install**. The package uses the SDK on the head unit. [MGU Store USB catalog format](https://github.com/robertnisipeanu/mgu-store/blob/main/docs/PUBLISHING.md#2-catalog)
 
 ## Test a camera
 
@@ -36,6 +40,6 @@ The eight 3D preset numbers have no side labels in the catalog. To map them on t
 
 **Live diagnostics** displays the selected mode and camera, the parking layout, the 3D availability flag, XView3D and ICAM2 state, player state, watchdog state and parking pop-ups. The app keeps its subscriptions while its process is running, including when the factory screen has taken focus.
 
-Look for `camera-probe` lines in the app's `data/parking_camera_assist.log` or its rotated `.log.1`. The records include provider availability, a before and after snapshot, the interface, method ID and parameters at dispatch, the native reply or error, and state changes observed while recording. **Dispatched** indicates that a fire-and-forget call returned from the local binding. **Replied** indicates a reply for a request-response call. Actual activation is measured from the observed state and display.
+Look for `camera-assist` lines in the app's `data/parking_camera_assist.log` or its rotated `.log.1`. The records include provider availability, a before and after snapshot, the interface, method ID and parameters at dispatch, the native reply or error, and state changes observed while recording. **Dispatched** indicates that a fire-and-forget call returned from the local binding. **Replied** indicates a reply for a request-response call. Actual activation is measured from the observed state and display.
 
 The USB package and local tests verify the app and the catalog signatures. OAP access to each service, behavior of inherited methods and the displayed camera view need validation on the vehicle.
