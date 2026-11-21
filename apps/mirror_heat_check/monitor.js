@@ -1,99 +1,85 @@
 'use strict';
 
-const { INDEX, DIDS, TEST_SECONDS, MirrorError } = require('./protocol');
+const { INDEX, DIDS, MirrorError } = require('./protocol');
 
 const REQUEST_MARGIN_MS = 2500;
-const CONFIRM_MS = 15000;
 const ORDER = ['equipment', 'counter', 'heating', 'protection'];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function monotonicMs() {
+    const time = process.hrtime();
+    return time[0] * 1000 + time[1] / 1000000;
+}
+
 class Monitor {
-    constructor(diag, parked, now, wait = sleep) {
+    constructor(diag, now = monotonicMs, wait = sleep) {
         this.diag = diag;
-        this.parked = parked;
         this.now = now;
         this.wait = wait;
         this.visible = false;
+        this.onScreen = false;
         this.generation = 0;
         this.busy = false;
         this.testInProgress = false;
-        this.confirmUntil = null;
+        this.refreshPending = false;
+        this.refreshAfterTest = false;
         this.activeUntil = 0;
         this.lockUntil = 0;
         this.samples = {};
-        this.message = 'Select Read status or Review heater test.';
+        this.message = 'Choose duration and power, then select Start test.';
         this.test = null;
     }
 
-    setVisible(visible) {
+    setVisible(visible, onScreen = visible) {
         if (this.visible && !visible) this.interrupt();
+        if (this.onScreen && !onScreen) this.refreshPending = true;
         this.visible = visible;
+        this.onScreen = onScreen;
+        return this.refreshIfPending();
+    }
+
+    disconnected() {
+        this.interrupt();
+        this.refreshPending = true;
+        this.message = 'Waiting for TASU.';
     }
 
     interrupt() {
         this.generation++;
-        if (this.confirmUntil !== null) {
-            this.message = 'Confirmation cancelled.';
-            this.confirmUntil = null;
-        }
         if (this.busy) {
+            this.refreshPending = true;
+            if (this.testInProgress && this.test.attempted) this.refreshAfterTest = true;
             if (!this.testInProgress) this.message = 'Reading stopped.';
             else this.message = this.test.attempted ? 'Observation stopped.' : 'Test cancelled before send.';
         }
     }
 
-    checking() {
-        return this.confirmUntil !== null && this.now() < this.confirmUntil;
-    }
-
-    tick() {
-        if (this.confirmUntil !== null && !this.checking()) {
-            this.confirmUntil = null;
-            this.message = 'Confirmation expired. Select Review heater test.';
+    refreshIfPending() {
+        if (this.refreshAfterTest && this.now() >= this.lockUntil) {
+            this.refreshPending = true;
         }
+        if (this.refreshPending && this.visible && !this.busy && this.diag.available) return this.refresh();
     }
 
     remaining() {
         return Math.max(0, Math.ceil((this.activeUntil - this.now()) / 1000));
     }
 
-    review() {
-        if (!this.visible || this.busy) return;
-        if (this.now() < this.lockUntil) {
-            this.message = 'Wait for the previous test duration to expire.';
-        } else if (!this.diag.available) {
-            this.message = 'Waiting for TASU.';
-        } else if (!this.parked()) {
-            this.message = 'Select P at 0 km/h. Waiting for current vehicle signals.';
-        } else {
-            this.confirmUntil = this.now() + CONFIRM_MS;
-            this.message = `Confirm 100% for ${TEST_SECONDS} seconds. Check both mirror surfaces.`;
-        }
-    }
-
-    confirm() {
-        this.tick();
-        if (!this.checking()) return Promise.resolve();
-        const deadline = this.confirmUntil;
-        this.confirmUntil = null;
-        return this.run(true, deadline);
+    start(power, seconds) {
+        return this.run({ power, seconds, attempted: false, raw: '', error: null, before: null, during: null, after: null });
     }
 
     refresh() {
-        this.confirmUntil = null;
-        return this.run(false);
+        return this.run();
     }
 
-    async run(active, deadline) {
+    async run(test) {
         if (!this.visible || this.busy) return;
-        if (active && (!Number.isFinite(deadline) || this.now() >= deadline)) return;
-        const test = active ? { attempted: false, raw: '', error: null, before: null, during: null, after: null } : null;
-        if (test) this.test = test;
-        if (!this.diag.available || (active && (!this.parked() || this.now() < this.lockUntil))) {
-            this.message = !this.diag.available ? 'Waiting for TASU.' : 'Test unavailable. Check P and test timer.';
-            if (test) test.error = this.message;
+        if (!this.diag.available || (test && this.now() < this.lockUntil)) {
+            this.message = !this.diag.available ? 'Waiting for TASU.' : 'Wait for the previous test duration to expire.';
             return;
         }
+        if (test) this.test = test;
         const generation = this.generation;
         const current = () => this.visible && generation === this.generation && this.diag.available;
         const guard = () => {
@@ -114,7 +100,9 @@ class Monitor {
         };
 
         this.busy = true;
-        this.testInProgress = active;
+        this.testInProgress = !!test;
+        this.refreshPending = false;
+        if (this.now() >= this.lockUntil) this.refreshAfterTest = false;
         this.samples = {};
         this.message = 'Identifying the BDC...';
         try {
@@ -124,7 +112,7 @@ class Monitor {
             }
             this.message = 'Reading mirror heater status...';
             for (const key of ORDER) await read(key);
-            if (!active) {
+            if (!test) {
                 await read('faults');
                 this.message = 'Snapshot from BDC_G05. Open Diagnostics for each reply.';
                 return;
@@ -146,13 +134,11 @@ class Monitor {
 
             this.message = 'Sending the heater test...';
             try {
-                test.raw = await this.diag.activate(() => {
+                test.raw = await this.diag.activate(test.power, test.seconds, () => {
                     guard();
-                    if (this.now() >= deadline) throw new MirrorError('Confirmation expired before send.');
-                    if (!this.parked()) throw new MirrorError('Parking status changed. Test cancelled.');
                     if (test.attempted) throw new MirrorError('Test already sent');
                     test.attempted = true;
-                    this.activeUntil = this.now() + TEST_SECONDS * 1000;
+                    this.activeUntil = this.now() + test.seconds * 1000;
                     this.lockUntil = this.activeUntil + REQUEST_MARGIN_MS;
                 });
             } catch (error) {
@@ -164,6 +150,7 @@ class Monitor {
                 }
                 if (/^NRC [0-9A-F]{2}$/.test(test.error)) {
                     this.activeUntil = 0;
+                    this.lockUntil = 0;
                     if (current()) this.message = 'BDC declined the test (' + test.error + ').';
                     return;
                 }
@@ -174,8 +161,9 @@ class Monitor {
                 this.message = acknowledged ? 'BDC accepted the request. Check both mirror surfaces.' :
                     'Test reply unconfirmed. Observing BDC until the test window ends.';
                 const value = await read('heating');
-                if (value && value.on !== null && this.now() < this.activeUntil &&
-                    (!test.during || (!test.during.on && value.on))) test.during = value;
+                if (value && value.on !== null && value.demand !== null && this.now() < this.activeUntil) {
+                    test.during = value;
+                }
                 await read('protection');
                 const delay = Math.min(2000, this.lockUntil - this.now());
                 if (delay > 0) await this.wait(delay);
@@ -195,6 +183,7 @@ class Monitor {
             if (test && !test.attempted && !test.error) test.error = this.message;
             this.busy = false;
             this.testInProgress = false;
+            await this.refreshIfPending();
         }
     }
 }

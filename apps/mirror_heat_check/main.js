@@ -3,7 +3,6 @@
 const mgu = require('./kit/mgu');
 const diagKit = require('./kit/diag');
 const { MirrorDiag } = require('./protocol');
-const { Parking, monotonicMs } = require('./parking');
 const { Monitor } = require('./monitor');
 const { bindUi } = require('./ui');
 
@@ -12,14 +11,13 @@ mgu.run({
         const link = new diagKit.Diag(ctx.signals, ctx.log);
         link.quiet = true;
         link.busyLog = false;
-        const parking = new Parking(ctx.signals, ctx.log, monotonicMs);
-        const monitor = new Monitor(new MirrorDiag(link, diagKit), () => parking.parked(), monotonicMs);
-        const render = bindUi(ctx, monitor);
+        const monitor = new Monitor(new MirrorDiag(link, diagKit));
+        const update = bindUi(ctx, monitor);
         link.on('available', (up) => {
-            if (!up) monitor.interrupt();
-            render();
+            if (!up) monitor.disconnected();
+            update();
         });
-        await Promise.all([link.init(), parking.init()]);
-        render();
+        await link.init();
+        update();
     }
 });

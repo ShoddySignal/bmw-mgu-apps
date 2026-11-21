@@ -3,8 +3,8 @@
 const ADDRESS = 0x40;
 const INDEX = '0F2680';
 const DIDS = Object.freeze({ ident: 0xf150, heating: 0xd32d, protection: 0xd321, counter: 0x2305, equipment: 0xe450 });
-const TEST_SECONDS = 240;
-const ACTIVATE = Object.freeze([0xd3, 0x2d, 0x00, 0x04, TEST_SECONDS >> 8, TEST_SECONDS & 0xff]);
+const MAX_TEST_SECONDS = 240;
+const POWER_LEVELS = Object.freeze([100, 75, 50, 25]);
 const FAULT_QUERY = Object.freeze([0x02, 0x0c]);
 const MIRROR_FAULTS = Object.freeze({
     '804246': 'Left heater or electrochromic dimming',
@@ -25,6 +25,11 @@ const lengths = {
 
 const hex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 const bit = (value) => value === 0 ? false : value === 1 ? true : null;
+
+function validTestSettings(power, seconds) {
+    return POWER_LEVELS.includes(power) && Number.isInteger(seconds) &&
+        seconds >= 1 && seconds <= MAX_TEST_SECONDS;
+}
 
 class MirrorError extends Error {
     constructor(code, raw) {
@@ -74,13 +79,14 @@ class MirrorDiag {
     get available() { return this.link.available; }
 
     async request(sid, data, guard) {
-        if (!Array.isArray(data) || !data.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+        if (!Array.isArray(data) || Array.from(data).some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
             throw new MirrorError('Request blocked');
         }
         const allowedRead = sid === 0x22 && data.length === 2 &&
             Object.values(DIDS).includes((data[0] << 8) | data[1]);
-        const allowedTest = sid === 0x2e && data.length === ACTIVATE.length &&
-            ACTIVATE.every((byte, index) => data[index] === byte);
+        const allowedTest = sid === 0x2e && data.length === 6 &&
+            ((data[0] << 8) | data[1]) === DIDS.heating && data[2] === 0 &&
+            validTestSettings(data[3] * 25, (data[4] << 8) | data[5]);
         const allowedFaults = sid === 0x19 && data.length === FAULT_QUERY.length &&
             FAULT_QUERY.every((byte, index) => data[index] === byte);
         if ((!allowedRead && !allowedTest && !allowedFaults) || typeof guard !== 'function') {
@@ -112,8 +118,11 @@ class MirrorDiag {
         return { value: decodeRead(did, uds), raw: hex(uds) };
     }
 
-    async activate(guard) {
-        const uds = await this.request(0x2e, ACTIVATE.slice(), guard);
+    async activate(power, seconds, guard) {
+        if (!validTestSettings(power, seconds)) throw new MirrorError('Invalid heater test settings.');
+        const did = DIDS.heating;
+        const data = [did >> 8, did & 0xff, 0, power / 25, seconds >> 8, seconds & 0xff];
+        const uds = await this.request(0x2e, data, guard);
         payload(uds, 0x2e, DIDS.heating, 0);
         return hex(uds);
     }
@@ -137,4 +146,4 @@ class MirrorDiag {
     }
 }
 
-module.exports = { INDEX, DIDS, MIRROR_FAULTS, TEST_SECONDS, MirrorDiag, MirrorError, decodeRead };
+module.exports = { INDEX, DIDS, MIRROR_FAULTS, MAX_TEST_SECONDS, POWER_LEVELS, MirrorDiag, MirrorError, decodeRead };

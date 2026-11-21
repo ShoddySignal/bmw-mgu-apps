@@ -1,8 +1,9 @@
 'use strict';
 
-const { MIRROR_FAULTS } = require('./protocol');
+const { MIRROR_FAULTS, MAX_TEST_SECONDS, POWER_LEVELS } = require('./protocol');
 const unknown = 'Unavailable';
 const faultRows = Object.keys(MIRROR_FAULTS).map((code) => 'F_' + code);
+const durations = [MAX_TEST_SECONDS, 180, 120, 60, 30];
 
 function value(sample) { return sample ? sample.value : null; }
 
@@ -31,8 +32,8 @@ function testReply(test) {
 function labels(monitor) {
     const sample = monitor.samples;
     const test = monitor.test;
-    const heat = value(sample.heating);
-    const demand = heat ? heat.demand : null;
+    const heat = monitor.refreshPending ? null : value(sample.heating);
+    const protection = monitor.refreshPending ? null : value(sample.protection);
     const count = value(sample.counter);
     const faults = value(sample.faults);
     let faultStatus = 'Select Read status';
@@ -41,11 +42,10 @@ function labels(monitor) {
     const remaining = monitor.remaining();
     const text = {
         STATUS: remaining ? monitor.message + ' ' + remaining + ' s' : monitor.message,
-        HEATING: 'BDC heater status: ' + state(heat && heat.on, 'ON', 'OFF'),
-        DEMAND: 'BDC requested output: ' + (demand === null ? unknown : demand + '%'),
-        PROTECTION: 'Protection (D321): ' + state(value(sample.protection), 'Active', 'Inactive'),
-        PARKING: 'Parking check: ' + (monitor.parked() ? 'P · 0 km/h' : 'waiting for current P and 0 km/h'),
+        HEATING: 'BDC heater status: ' + (heat ? heatSummary(heat) : unknown),
+        PROTECTION: 'Protection (D321): ' + state(protection, 'Active', 'Inactive'),
         R_TEST: 'Last test reply: ' + testReply(test),
+        TEST_SETTINGS: 'Last test settings: ' + (test ? test.seconds + ' s · ' + test.power + '%' : '—'),
         BEFORE: 'Before test: ' + heatSummary(test && test.before),
         DURING: 'During test: ' + heatSummary(test && test.during),
         AFTER: 'After test: ' + heatSummary(test && test.after),
@@ -67,9 +67,11 @@ function labels(monitor) {
 function bindUi(ctx, monitor) {
     const ui = ctx.ui;
     const sent = {};
-    const view = ['STATUS', 'HEATING', 'DEMAND', 'PROTECTION', 'PARKING'];
-    const diagnostics = ['R_TEST', 'BEFORE', 'DURING', 'AFTER', 'FAULT_STATUS', 'IDENT', 'CODED', 'NSC',
+    const view = ['STATUS', 'HEATING', 'PROTECTION'];
+    const diagnostics = ['R_TEST', 'TEST_SETTINGS', 'BEFORE', 'DURING', 'AFTER', 'FAULT_STATUS', 'IDENT', 'CODED', 'NSC',
         'R_HEAT', 'R_PROTECT', 'R_COUNT', 'R_EQUIPMENT'];
+    let duration = durations[0];
+    let power = POWER_LEVELS[0];
     let rendering = false;
     let dirty = false;
     function changed(key, value, update, pending) {
@@ -84,17 +86,15 @@ function bindUi(ctx, monitor) {
         try {
             do {
                 dirty = false;
-                monitor.tick();
                 const text = labels(monitor);
                 const pending = [];
                 if (ui.isVisible('MAIN')) {
                     for (const key of view) changed(key, text[key], () => ui.text(key, text[key]), pending);
-                    const confirming = monitor.checking();
-                    changed('show-confirm', confirming, () => ui.visible('CONFIRM', confirming), pending);
-                    const canRead = !monitor.busy;
-                    const canReview = !monitor.busy && !confirming && monitor.now() >= monitor.lockUntil;
-                    changed('enable-read', canRead, () => ui.enabled('READ', canRead), pending);
-                    changed('enable-review', canReview, () => ui.enabled('REVIEW', canReview), pending);
+                    for (const key of ['READ', 'DURATION', 'POWER']) {
+                        changed('enable-' + key, !monitor.busy, () => ui.enabled(key, !monitor.busy), pending);
+                    }
+                    const canStart = !monitor.busy && monitor.now() >= monitor.lockUntil;
+                    changed('enable-start', canStart, () => ui.enabled('START', canStart), pending);
                 }
                 if (ui.isVisible('DETAILS')) {
                     for (const key of diagnostics) changed(key, text[key], () => ui.text(key, text[key]), pending);
@@ -115,33 +115,42 @@ function bindUi(ctx, monitor) {
 
     function run(action) {
         const result = action();
-        render();
-        return Promise.resolve(result).then(render);
+        const rendered = render();
+        return result ? result.then(render) : rendered;
     }
 
+    function update() {
+        return run(() => monitor.refreshIfPending());
+    }
+
+    ui.onClick('DURATION', ({ row }) => {
+        if (Number.isInteger(row) && durations[row] !== undefined) duration = durations[row];
+    });
+    ui.onClick('POWER', ({ row }) => {
+        if (Number.isInteger(row) && POWER_LEVELS[row] !== undefined) power = POWER_LEVELS[row];
+    });
     ui.onClick('READ', () => run(() => monitor.refresh()));
-    ui.onClick('REVIEW', () => run(() => monitor.review()));
-    ui.onClick('CONFIRM', () => run(() => monitor.confirm()));
+    ui.onClick('START', () => run(() => monitor.start(power, duration)));
     ui.onClick('DETAILS_OPEN', () => {
         monitor.setVisible(false);
         return ui.open('DETAILS');
     });
     function visible() {
-        monitor.setVisible(ui.isVisible('MAIN') && ui.hasFocus('MAIN') && !ui.isVisible('DETAILS'));
-        render();
+        const onScreen = ui.isVisible('MAIN') && !ui.isVisible('DETAILS');
+        return run(() => monitor.setVisible(onScreen && ui.hasFocus('MAIN'), onScreen));
     }
 
     ui.onVisible(visible);
     ui.onFocus(visible);
     const timer = setInterval(() => {
-        if (ui.isVisible('MAIN') || ui.isVisible('DETAILS')) render();
+        if (ui.isVisible('MAIN') || ui.isVisible('DETAILS')) update();
     }, 500);
     ctx.app.on('shutdown', () => {
         monitor.setVisible(false);
         clearInterval(timer);
     });
     visible();
-    return render;
+    return update;
 }
 
 module.exports = { labels, bindUi };
